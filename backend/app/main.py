@@ -5,7 +5,7 @@ from typing import Any
 
 import chromadb
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -90,14 +90,59 @@ def health() -> dict[str, str]:
 
 
 @app.get("/candidates", response_model=list[CandidateOut])
-def get_candidates(db: sqlite3.Connection = Depends(get_db)) -> list[CandidateOut]:
-    rows = db.execute(
-        "SELECT id, name, reply_company, location, seniority, availability_status, "
-        "current_project_name, last_updated, chroma_doc_id FROM employees ORDER BY name"
-    ).fetchall()
+def get_candidates(
+    db: sqlite3.Connection = Depends(get_db),
+    skill: str | None = Query(default=None),
+    min_years: float | None = Query(default=None),
+    seniority: str | None = Query(default=None),
+    availability: str | None = Query(default=None),
+    company: str | None = Query(default=None),
+    location: str | None = Query(default=None),
+) -> list[CandidateOut]:
+    join_clause = ""
+    conditions: list[str] = []
+    filter_params: list[Any] = []
 
+    if skill:
+        join_clause = " JOIN employee_skills es ON e.id = es.employee_id"
+        conditions.append("LOWER(es.skill) = LOWER(?)")
+        filter_params.append(skill)
+        if min_years is not None:
+            conditions.append("es.years_experience >= ?")
+            filter_params.append(min_years)
+
+    if seniority:
+        conditions.append("e.seniority = ?")
+        filter_params.append(seniority)
+    if availability:
+        conditions.append("e.availability_status = ?")
+        filter_params.append(availability)
+    if company:
+        conditions.append("LOWER(e.reply_company) = LOWER(?)")
+        filter_params.append(company)
+    if location:
+        conditions.append("LOWER(e.location) = LOWER(?)")
+        filter_params.append(location)
+
+    query_sql = (
+        "SELECT DISTINCT e.id, e.name, e.reply_company, e.location, e.seniority, "
+        "e.availability_status, e.current_project_name, e.last_updated, e.chroma_doc_id "
+        f"FROM employees e{join_clause}"
+    )
+    if conditions:
+        query_sql += " WHERE " + " AND ".join(conditions)
+    query_sql += " ORDER BY e.name"
+
+    rows = db.execute(query_sql, filter_params).fetchall()
+
+    if not rows:
+        return []
+
+    employee_ids = [row["id"] for row in rows]
+    placeholders = ",".join("?" * len(employee_ids))
     skill_rows = db.execute(
-        "SELECT employee_id, skill, years_experience FROM employee_skills"
+        f"SELECT employee_id, skill, years_experience FROM employee_skills WHERE employee_id IN ({placeholders})",
+        employee_ids,
     ).fetchall()
 
     skills_by_employee: dict[str, list[SkillOut]] = {}

@@ -76,3 +76,77 @@ def test_candidates_availability_values_are_valid(test_client):
     response = test_client.get("/candidates")
     for candidate in response.json():
         assert candidate["availability_status"] in valid_status
+
+
+def test_filter_by_seniority(test_client):
+    response = test_client.get("/candidates?seniority=junior")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Tom Bradley"
+    assert all(c["seniority"] == "junior" for c in data)
+
+
+def test_filter_by_availability(test_client):
+    response = test_client.get("/candidates?availability=available")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 3
+    assert all(c["availability_status"] == "available" for c in data)
+
+
+def test_filter_by_company(test_client):
+    response = test_client.get("/candidates?company=Data Reply")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert all(c["reply_company"] == "Data Reply" for c in data)
+
+
+def test_filter_by_location(test_client):
+    response = test_client.get("/candidates?location=London")
+    assert response.status_code == 200
+    data = response.json()
+    assert all(c["location"] == "London" for c in data)
+    names = {c["name"] for c in data}
+    assert "Maya Okafor" in names
+    assert "Aisha Rahman" in names
+
+
+def test_filter_by_skill_and_min_years(test_client):
+    response = test_client.get("/candidates?skill=Python&min_years=5")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 3
+    names = {c["name"] for c in data}
+    assert "Maya Okafor" in names
+    assert "James Carter" in names
+    assert "Priya Nair" in names
+
+
+def test_filter_by_skill_without_min_years(test_client):
+    response = test_client.get("/candidates?skill=RAG")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Aisha Rahman"
+
+
+def test_filter_combination_company_and_seniority(test_client):
+    response = test_client.get("/candidates?company=Data Reply&seniority=senior")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "James Carter"
+
+
+def test_filter_returns_empty_list_when_no_match(test_client):
+    response = test_client.get("/candidates?seniority=junior&company=Data Reply")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_no_filters_returns_all(test_client):
+    response = test_client.get("/candidates")
+    assert response.status_code == 200
+    assert len(response.json()) == 10

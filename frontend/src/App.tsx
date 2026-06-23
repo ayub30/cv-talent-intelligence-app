@@ -53,6 +53,8 @@ type Candidate = {
   confidence: number;
   completeness: number;
   availability: string;
+  availabilityStatus: string;
+  seniority: string;
   clearance: string;
   skills: string[];
   evidence: string[];
@@ -115,6 +117,8 @@ function mapApiCandidate(api: ApiCandidate): Candidate {
     confidence: 0,
     completeness: 0,
     availability: AVAILABILITY_LABELS[api.availability_status] ?? api.availability_status,
+    availabilityStatus: api.availability_status,
+    seniority: api.seniority,
     clearance: '—',
     skills: api.skills.map((s) => s.skill),
     evidence: [],
@@ -139,6 +143,9 @@ export function App() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [isCandidatesLoading, setIsCandidatesLoading] = useState(true);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [filterCompany, setFilterCompany] = useState('');
+  const [filterAvailability, setFilterAvailability] = useState('');
+  const [filterSeniority, setFilterSeniority] = useState('');
 
   useEffect(() => {
     fetch('/candidates')
@@ -158,16 +165,21 @@ export function App() {
 
   const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
 
+  const uniqueCompanies = useMemo(() => [...new Set(candidates.map((c) => c.company))].sort(), [candidates]);
+
   const filteredCandidates = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return candidates.filter((candidate) => {
+      if (filterCompany && candidate.company !== filterCompany) return false;
+      if (filterAvailability && candidate.availabilityStatus !== filterAvailability) return false;
+      if (filterSeniority && candidate.seniority !== filterSeniority) return false;
       if (!terms.length) return true;
       const haystack = [candidate.name, candidate.role, candidate.company, candidate.location, ...candidate.skills]
         .join(' ')
         .toLowerCase();
       return terms.every((term) => haystack.includes(term) || term.length < 3);
     });
-  }, [candidates, query]);
+  }, [candidates, query, filterCompany, filterAvailability, filterSeniority]);
 
   function toggleShortlist(id: string) {
     setShortlist((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
@@ -270,6 +282,13 @@ export function App() {
               }}
               isLoading={isCandidatesLoading}
               error={candidatesError}
+              uniqueCompanies={uniqueCompanies}
+              filterCompany={filterCompany}
+              setFilterCompany={setFilterCompany}
+              filterAvailability={filterAvailability}
+              setFilterAvailability={setFilterAvailability}
+              filterSeniority={filterSeniority}
+              setFilterSeniority={setFilterSeniority}
             />
           )}
           {page === 'ai' && (
@@ -387,6 +406,13 @@ function TalentSearch({
   openProfile,
   isLoading,
   error,
+  uniqueCompanies,
+  filterCompany,
+  setFilterCompany,
+  filterAvailability,
+  setFilterAvailability,
+  filterSeniority,
+  setFilterSeniority,
 }: {
   query: string;
   setQuery: (value: string) => void;
@@ -398,14 +424,37 @@ function TalentSearch({
   openProfile: (id: string) => void;
   isLoading: boolean;
   error: string | null;
+  uniqueCompanies: string[];
+  filterCompany: string;
+  setFilterCompany: (value: string) => void;
+  filterAvailability: string;
+  setFilterAvailability: (value: string) => void;
+  filterSeniority: string;
+  setFilterSeniority: (value: string) => void;
 }) {
   return (
     <div className="stack">
       <Panel title="Search controls">
         <div className="filters">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} />
-          <select><option>All companies</option><option>Data Reply</option><option>Cluster Reply</option></select>
-          <select><option>Any availability</option><option>Available now</option><option>Rolling off</option></select>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, skill, location…" />
+          <select value={filterCompany} onChange={(event) => setFilterCompany(event.target.value)}>
+            <option value="">All companies</option>
+            {uniqueCompanies.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={filterAvailability} onChange={(event) => setFilterAvailability(event.target.value)}>
+            <option value="">Any availability</option>
+            <option value="available">Available now</option>
+            <option value="on_bench">On bench</option>
+            <option value="rolling_off">Rolling off</option>
+            <option value="on_project">On project</option>
+          </select>
+          <select value={filterSeniority} onChange={(event) => setFilterSeniority(event.target.value)}>
+            <option value="">Any seniority</option>
+            <option value="junior">Junior</option>
+            <option value="mid">Mid</option>
+            <option value="senior">Senior</option>
+            <option value="principal">Principal</option>
+          </select>
           <label>Minimum match {minScore}%<input type="range" min={50} max={95} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} /></label>
         </div>
       </Panel>
