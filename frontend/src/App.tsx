@@ -934,12 +934,75 @@ function ProfileEditForm({
 }
 
 function Shortlist({ ids, candidates, toggleShortlist }: { ids: string[]; candidates: Candidate[]; toggleShortlist: (id: string) => void }) {
-  const [exported, setExported] = useState(false);
   const shortlisted = candidates.filter((candidate) => ids.includes(candidate.id));
+  const [rationales, setRationales] = useState<Record<string, string>>({});
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  function setRationale(id: string, value: string) {
+    setRationales((prev) => ({ ...prev, [id]: value }));
+  }
+
+  async function handleExport() {
+    if (shortlisted.length === 0) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const profilesData = await Promise.all(
+        shortlisted.map(async (candidate) => {
+          const res = await fetch(`/profile/${candidate.id}`);
+          if (!res.ok) return null;
+          return res.json() as Promise<ApiProfile>;
+        })
+      );
+
+      const pack = shortlisted.map((candidate, i) => {
+        const profile = profilesData[i];
+        const cvText = profile?.cv_text ?? '';
+        const evidence = cvText
+          ? cvText.split('. ').map((s: string) => s.trim()).filter(Boolean).slice(0, 5)
+          : [];
+        return {
+          name: candidate.name,
+          role: candidate.role,
+          score: candidate.score,
+          skills: candidate.skills,
+          evidence,
+          gaps: candidate.gaps,
+          rationale: rationales[candidate.id] ?? '',
+        };
+      });
+
+      const blob = new Blob(
+        [JSON.stringify({ candidates: pack, generated_at: new Date().toISOString() }, null, 2)],
+        { type: 'application/json' }
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'proposal-pack.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Export failed.');
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   return (
     <div className="stack">
-      <Panel title="Shortlist builder" action={<button onClick={() => setExported(true)}><ArrowDownTrayIcon /> Export pack</button>}>
-        {exported && <Evidence>Proposal pack queued: CV summaries, AI evidence, gaps, and approval notes.</Evidence>}
+      <Panel
+        title="Shortlist builder"
+        action={
+          <button onClick={handleExport} disabled={isExporting || shortlisted.length === 0}>
+            <ArrowDownTrayIcon /> {isExporting ? 'Generating…' : 'Export pack'}
+          </button>
+        }
+      >
+        {exportError && <Warning>{exportError}</Warning>}
         {shortlisted.length === 0 ? (
           <p className="body-copy">No candidates shortlisted yet. Add candidates from the Talent Search page.</p>
         ) : (
@@ -950,7 +1013,11 @@ function Shortlist({ ids, candidates, toggleShortlist }: { ids: string[]; candid
                 <strong>{candidate.name}</strong>
                 <small>{candidate.role}</small>
                 <Score label="Match" value={candidate.score} />
-                <textarea placeholder="Proposal rationale" />
+                <textarea
+                  placeholder="Proposal rationale"
+                  value={rationales[candidate.id] ?? ''}
+                  onChange={(e) => setRationale(candidate.id, e.target.value)}
+                />
               </div>
             ))}
           </div>
