@@ -147,6 +147,7 @@ export function App() {
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterSeniority, setFilterSeniority] = useState('');
   const [profileCvText, setProfileCvText] = useState<string | null>(null);
+  const [profileIsStale, setProfileIsStale] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
@@ -177,14 +178,16 @@ export function App() {
     if (!selected) return;
     setIsProfileLoading(true);
     setProfileCvText(null);
+    setProfileIsStale(false);
     setProfileError(null);
     fetch(`/profile/${selected.id}`)
       .then((res) => {
         if (!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
-        return res.json() as Promise<{ cv_text: string }>;
+        return res.json() as Promise<{ cv_text: string; is_stale: boolean }>;
       })
       .then((data) => {
         setProfileCvText(data.cv_text);
+        setProfileIsStale(data.is_stale ?? false);
         setIsProfileLoading(false);
       })
       .catch((err: unknown) => {
@@ -337,6 +340,7 @@ export function App() {
               shortlisted={shortlist.includes(selected.id)}
               toggleShortlist={toggleShortlist}
               cvText={profileCvText}
+              isStale={profileIsStale}
               isProfileLoading={isProfileLoading}
               profileError={profileError}
             />
@@ -567,6 +571,7 @@ function Profile({
   shortlisted,
   toggleShortlist,
   cvText,
+  isStale,
   isProfileLoading,
   profileError,
 }: {
@@ -574,6 +579,7 @@ function Profile({
   shortlisted: boolean;
   toggleShortlist: (id: string) => void;
   cvText: string | null;
+  isStale: boolean;
   isProfileLoading: boolean;
   profileError: string | null;
 }) {
@@ -585,6 +591,7 @@ function Profile({
     <div className="two-col">
       <Panel title={candidate.name} action={<button onClick={() => toggleShortlist(candidate.id)}>{shortlisted ? 'Shortlisted' : 'Add to shortlist'}</button>}>
         <p className="subhead">{candidate.role} - {candidate.company} - {candidate.location}</p>
+        {isStale && <Warning>CV not updated in over 6 months — may be out of date.</Warning>}
         <div className="profile-metrics">
           <Score label="Match" value={candidate.score} />
           <Score label="Confidence" value={candidate.confidence} />

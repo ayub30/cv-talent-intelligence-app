@@ -1,3 +1,4 @@
+import calendar
 import os
 import shutil
 import sqlite3
@@ -226,6 +227,33 @@ async def ask(payload: AskRequest) -> AskResponse:
     )
 
 
+STALE_MONTHS = 6
+
+
+def _is_stale(last_updated_iso: str) -> bool:
+    try:
+        last_updated = datetime.fromisoformat(last_updated_iso)
+    except ValueError:
+        return False
+    if last_updated.tzinfo is None:
+        last_updated = last_updated.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    threshold_month = now.month - STALE_MONTHS
+    threshold_year = now.year
+    if threshold_month <= 0:
+        threshold_month += 12
+        threshold_year -= 1
+    max_day = calendar.monthrange(threshold_year, threshold_month)[1]
+    threshold = now.replace(
+        year=threshold_year,
+        month=threshold_month,
+        day=min(now.day, max_day),
+        microsecond=0,
+    )
+    return last_updated <= threshold
+
+
 class ProfileOut(BaseModel):
     id: str
     name: str
@@ -238,6 +266,7 @@ class ProfileOut(BaseModel):
     chroma_doc_id: str
     skills: list[SkillOut]
     cv_text: str
+    is_stale: bool
 
 
 @app.get("/profile/{employee_id}", response_model=ProfileOut)
@@ -275,6 +304,7 @@ def get_profile(
         chroma_doc_id=row["chroma_doc_id"],
         skills=[SkillOut(skill=sr["skill"], years_experience=sr["years_experience"]) for sr in skill_rows],
         cv_text=cv_text or "",
+        is_stale=_is_stale(row["last_updated"]),
     )
 
 
