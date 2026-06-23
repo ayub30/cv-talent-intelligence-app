@@ -9,12 +9,13 @@ from typing import Any
 
 import chromadb
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .auth import create_access_token, require_auth, verify_password
 from .chroma_store import init_collection, make_chroma_client, seed_collection
-from .database import init_db, make_connection, seed_db
+from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
 
 
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
     conn = make_connection(DB_PATH)
     init_db(conn)
     seed_db(conn)
+    seed_users(conn)
     app.state.db_conn = conn
 
     chroma_client = make_chroma_client(CHROMA_PATH)
@@ -57,6 +59,33 @@ def get_db() -> sqlite3.Connection:
 
 def get_collection() -> chromadb.Collection:
     return app.state.chroma_collection
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/auth/login")
+def login(
+    payload: LoginRequest,
+    response: Response,
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict[str, str]:
+    row = db.execute(
+        "SELECT email, password_hash FROM users WHERE email = ?", (payload.email,)
+    ).fetchone()
+    if not row or not verify_password(payload.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token(sub=row["email"])
+    response.set_cookie("access_token", token, httponly=True, samesite="lax", max_age=86400)
+    return {"message": "logged in"}
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict[str, str]:
+    response.delete_cookie("access_token")
+    return {"message": "logged out"}
 
 
 class AskRequest(BaseModel):
@@ -103,6 +132,7 @@ def get_candidates(
     availability: str | None = Query(default=None),
     company: str | None = Query(default=None),
     location: str | None = Query(default=None),
+    _auth: str = Depends(require_auth),
 ) -> list[CandidateOut]:
     join_clause = ""
     conditions: list[str] = []
@@ -174,7 +204,7 @@ def get_candidates(
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask(payload: AskRequest) -> AskResponse:
+async def ask(payload: AskRequest, _auth: str = Depends(require_auth)) -> AskResponse:
     if not LLM_URL:
         return AskResponse(
             source="mock",
@@ -274,6 +304,7 @@ def get_profile(
     employee_id: str,
     db: sqlite3.Connection = Depends(get_db),
     collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
 ) -> ProfileOut:
     row = db.execute(
         "SELECT id, name, reply_company, location, seniority, availability_status, "
@@ -324,6 +355,7 @@ def patch_profile(
     patch: ProfilePatch,
     db: sqlite3.Connection = Depends(get_db),
     collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
 ) -> ProfileOut:
     row = db.execute(
         "SELECT id FROM employees WHERE id = ?",
@@ -379,6 +411,7 @@ async def ingest(
     file: UploadFile = File(...),
     db: sqlite3.Connection = Depends(get_db),
     collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
 ) -> IngestResponse:
     if not file.filename:
         raise HTTPException(status_code=422, detail="No file provided.")

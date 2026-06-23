@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import require_auth
 from app.chroma_store import init_collection, make_ephemeral_client, seed_collection
 from app.database import init_db, seed_db
 from app.main import app, get_collection, get_db
@@ -22,6 +23,7 @@ def test_client():
 
     app.dependency_overrides[get_db] = lambda: conn
     app.dependency_overrides[get_collection] = lambda: collection
+    app.dependency_overrides[require_auth] = lambda: "test@example.com"
 
     with TestClient(app, raise_server_exceptions=True) as client:
         yield client

@@ -291,3 +291,17 @@ def seed_db(conn: sqlite3.Connection) -> None:
 
 def get_seed_employees() -> list[dict]:
     return _SEED_EMPLOYEES
+
+
+def seed_users(conn: sqlite3.Connection) -> None:
+    from .auth import hash_password
+
+    existing = conn.execute("SELECT id FROM users LIMIT 1").fetchone()
+    if existing:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+        ("admin@reply.com", hash_password("admin123"), "admin", now),
+    )
+    conn.commit()
