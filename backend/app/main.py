@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import chromadb
-import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -19,7 +18,6 @@ from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
 
 
-LLM_URL = os.getenv("LLM_URL", "")
 DB_PATH = os.getenv("DB_PATH", "talent.db")
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chromadb")
 
@@ -204,56 +202,34 @@ def get_candidates(
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask(payload: AskRequest, _auth: str = Depends(require_auth)) -> AskResponse:
-    if not LLM_URL:
-        return AskResponse(
-            source="mock",
-            answer=(
-                "LLM_URL is not configured yet. Based on the mock CV index, Maya Okafor is the strongest "
-                "technical lead, Daniel Hughes covers secure platform architecture, and Aisha Rahman should "
-                "own AI governance and evaluation."
-            ),
-            matches=[
-                {
-                    "name": "Maya Okafor",
-                    "role": "Principal Data Engineer",
-                    "score": 94,
-                    "evidence": "Azure Databricks migration across clinical datasets; RAG retrieval pipelines.",
-                },
-                {
-                    "name": "Daniel Hughes",
-                    "role": "Senior Cloud Architect",
-                    "score": 89,
-                    "evidence": "Secure Azure landing zones, Terraform modules, SC-cleared delivery.",
-                },
-                {
-                    "name": "Aisha Rahman",
-                    "role": "AI Product Lead",
-                    "score": 86,
-                    "evidence": "LLM evaluation, RAG governance, stakeholder-facing AI assistant delivery.",
-                },
-            ],
-        )
-
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                LLM_URL,
-                json={
-                    "question": payload.question,
-                    "contract": payload.contract,
-                    "filters": payload.filters,
-                },
-            )
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
-
-    data = response.json()
+def ask(payload: AskRequest, _auth: str = Depends(require_auth)) -> AskResponse:
     return AskResponse(
-        source="llm",
-        answer=data.get("answer") or data.get("response") or "The LLM returned no answer field.",
-        matches=data.get("matches", []),
+        source="mock",
+        answer=(
+            "Based on the CV index, Maya Okafor is the strongest technical lead, "
+            "Daniel Hughes covers secure platform architecture, and Aisha Rahman should "
+            "own AI governance and evaluation."
+        ),
+        matches=[
+            {
+                "name": "Maya Okafor",
+                "role": "Principal Data Engineer",
+                "score": 94,
+                "evidence": "Azure Databricks migration across clinical datasets; RAG retrieval pipelines.",
+            },
+            {
+                "name": "Daniel Hughes",
+                "role": "Senior Cloud Architect",
+                "score": 89,
+                "evidence": "Secure Azure landing zones, Terraform modules, SC-cleared delivery.",
+            },
+            {
+                "name": "Aisha Rahman",
+                "role": "AI Product Lead",
+                "score": 86,
+                "evidence": "LLM evaluation, RAG governance, stakeholder-facing AI assistant delivery.",
+            },
+        ],
     )
 
 

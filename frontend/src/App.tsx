@@ -160,6 +160,7 @@ export function App() {
   const [askInput, setAskInput] = useState('Find the best team for this contract');
   const [aiAnswer, setAiAnswer] = useState('Ask the assistant to rank people using the backend /ask route.');
   const [aiMatches, setAiMatches] = useState<AskMatch[]>([]);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [isAsking, setIsAsking] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [isCandidatesLoading, setIsCandidatesLoading] = useState(true);
@@ -280,6 +281,7 @@ export function App() {
   async function askLLM(question = askInput) {
     if (!question.trim()) return;
     setIsAsking(true);
+    setAiError(null);
     setPage('ai');
     try {
       const response = await fetch('/ask', {
@@ -296,7 +298,7 @@ export function App() {
       setAiAnswer(data.answer);
       setAiMatches(data.matches ?? []);
     } catch (error) {
-      setAiAnswer(error instanceof Error ? error.message : 'The assistant request failed.');
+      setAiError(error instanceof Error ? error.message : 'The assistant is unreachable. Check the backend.');
       setAiMatches([]);
     } finally {
       setIsAsking(false);
@@ -409,6 +411,7 @@ export function App() {
               askLLM={askLLM}
               isAsking={isAsking}
               aiAnswer={aiAnswer}
+              aiError={aiError}
               aiMatches={aiMatches}
               candidates={candidates}
             />
@@ -666,6 +669,7 @@ function AIWorkspace({
   askLLM,
   isAsking,
   aiAnswer,
+  aiError,
   aiMatches,
   candidates,
 }: {
@@ -674,6 +678,7 @@ function AIWorkspace({
   askLLM: (question?: string) => void;
   isAsking: boolean;
   aiAnswer: string;
+  aiError: string | null;
   aiMatches: AskMatch[];
   candidates: Candidate[];
 }) {
@@ -682,13 +687,19 @@ function AIWorkspace({
       <Panel title="AI match workspace" action={<span className="status-pill">Backend /ask</span>}>
         <div className="chat-window">
           <div className="bubble user">Find people for a healthcare Azure data migration with RAG experience.</div>
-          <div className="bubble assistant">{aiAnswer}</div>
+          {isAsking ? (
+            <div className="bubble assistant">Thinking…</div>
+          ) : aiError ? (
+            <Warning>{aiError}</Warning>
+          ) : (
+            <div className="bubble assistant">{aiAnswer}</div>
+          )}
         </div>
         <div className="ask-bar">
           <input value={askInput} onChange={(event) => setAskInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && askLLM()} />
           <button disabled={isAsking} onClick={() => askLLM()}>
             <PaperAirplaneIcon />
-            {isAsking ? 'Asking' : 'Ask'}
+            {isAsking ? 'Asking…' : 'Ask'}
           </button>
         </div>
       </Panel>
