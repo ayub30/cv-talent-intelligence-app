@@ -68,6 +68,21 @@ type AskMatch = {
   evidence?: string;
 };
 
+type ApiProfile = ApiCandidate & {
+  cv_text: string;
+  is_stale: boolean;
+};
+
+type ProfileEditFields = {
+  name: string;
+  reply_company: string;
+  location: string;
+  seniority: string;
+  availability_status: string;
+  current_project_name: string;
+  skills: Array<{ skill: string; years_experience: number }>;
+};
+
 const pages: Array<{ key: Page; label: string; icon: typeof UserGroupIcon }> = [
   { key: 'dashboard', label: 'Command', icon: ClipboardDocumentCheckIcon },
   { key: 'contract', label: 'Contract intake', icon: DocumentMagnifyingGlassIcon },
@@ -146,10 +161,10 @@ export function App() {
   const [filterCompany, setFilterCompany] = useState('');
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterSeniority, setFilterSeniority] = useState('');
-  const [profileCvText, setProfileCvText] = useState<string | null>(null);
-  const [profileIsStale, setProfileIsStale] = useState(false);
+  const [profileApiData, setProfileApiData] = useState<ApiProfile | null>(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileRefreshKey, setProfileRefreshKey] = useState(0);
 
   function refreshCandidates() {
     fetch('/candidates')
@@ -177,17 +192,15 @@ export function App() {
   useEffect(() => {
     if (!selected) return;
     setIsProfileLoading(true);
-    setProfileCvText(null);
-    setProfileIsStale(false);
+    setProfileApiData(null);
     setProfileError(null);
     fetch(`/profile/${selected.id}`)
       .then((res) => {
         if (!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
-        return res.json() as Promise<{ cv_text: string; is_stale: boolean }>;
+        return res.json() as Promise<ApiProfile>;
       })
       .then((data) => {
-        setProfileCvText(data.cv_text);
-        setProfileIsStale(data.is_stale ?? false);
+        setProfileApiData(data);
         setIsProfileLoading(false);
       })
       .catch((err: unknown) => {
@@ -195,7 +208,7 @@ export function App() {
         setIsProfileLoading(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
+  }, [selected?.id, profileRefreshKey]);
 
   const uniqueCompanies = useMemo(() => [...new Set(candidates.map((c) => c.company))].sort(), [candidates]);
 
@@ -339,10 +352,15 @@ export function App() {
               candidate={selected}
               shortlisted={shortlist.includes(selected.id)}
               toggleShortlist={toggleShortlist}
-              cvText={profileCvText}
-              isStale={profileIsStale}
+              cvText={profileApiData?.cv_text ?? null}
+              isStale={profileApiData?.is_stale ?? false}
               isProfileLoading={isProfileLoading}
               profileError={profileError}
+              profileApiData={profileApiData}
+              onProfileSaved={() => {
+                refreshCandidates();
+                setProfileRefreshKey((k) => k + 1);
+              }}
             />
           )}
           {page === 'shortlist' && <Shortlist ids={shortlist} candidates={candidates} toggleShortlist={toggleShortlist} />}
@@ -574,6 +592,8 @@ function Profile({
   isStale,
   isProfileLoading,
   profileError,
+  profileApiData,
+  onProfileSaved,
 }: {
   candidate: Candidate;
   shortlisted: boolean;
@@ -582,8 +602,58 @@ function Profile({
   isStale: boolean;
   isProfileLoading: boolean;
   profileError: string | null;
+  profileApiData: ApiProfile | null;
+  onProfileSaved: () => void;
 }) {
   const [tab, setTab] = useState('Overview');
+  const [editFields, setEditFields] = useState<ProfileEditFields | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    if (profileApiData) {
+      setEditFields({
+        name: profileApiData.name,
+        reply_company: profileApiData.reply_company,
+        location: profileApiData.location,
+        seniority: profileApiData.seniority,
+        availability_status: profileApiData.availability_status,
+        current_project_name: profileApiData.current_project_name ?? '',
+        skills: profileApiData.skills.map((s) => ({ ...s })),
+      });
+      setSaveError(null);
+      setSaveSuccess(false);
+    }
+  }, [profileApiData]);
+
+  async function handleSave() {
+    if (!editFields) return;
+    setIsSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    try {
+      const response = await fetch(`/profile/${candidate.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...editFields,
+          current_project_name: editFields.current_project_name || null,
+        }),
+      });
+      if (!response.ok) {
+        const detail = await response.json().then((d: { detail?: string }) => d.detail).catch(() => null);
+        throw new Error(detail ?? `Save failed: ${response.status}`);
+      }
+      setSaveSuccess(true);
+      onProfileSaved();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Save failed.');
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   const evidenceItems = cvText
     ? cvText.split('. ').map((s) => s.trim()).filter(Boolean)
     : [];
@@ -600,7 +670,7 @@ function Profile({
         <div className="pills">{candidate.skills.map((skill) => <Pill key={skill}>{skill}</Pill>)}</div>
       </Panel>
       <Panel title="Profile detail">
-        <div className="tabs">{['Overview', 'CV evidence', 'Gaps'].map((item) => <button key={item} className={tab === item ? 'active-tab' : ''} onClick={() => setTab(item)}>{item}</button>)}</div>
+        <div className="tabs">{['Overview', 'CV evidence', 'Gaps', 'Edit'].map((item) => <button key={item} className={tab === item ? 'active-tab' : ''} onClick={() => setTab(item)}>{item}</button>)}</div>
         {tab === 'Overview' && (
           <div className="field-list">
             <Field label="Seniority" value={candidate.seniority} />
@@ -619,7 +689,108 @@ function Profile({
                 : <p className="body-copy">No CV evidence indexed yet.</p>
         )}
         {tab === 'Gaps' && (candidate.gaps.length ? candidate.gaps.map((item) => <Warning key={item}>{item}</Warning>) : <p className="body-copy">No gaps recorded.</p>)}
+        {tab === 'Edit' && (
+          <ProfileEditForm
+            fields={editFields}
+            setFields={setEditFields}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveError={saveError}
+            saveSuccess={saveSuccess}
+            isLoading={isProfileLoading}
+          />
+        )}
       </Panel>
+    </div>
+  );
+}
+
+function ProfileEditForm({
+  fields,
+  setFields,
+  onSave,
+  isSaving,
+  saveError,
+  saveSuccess,
+  isLoading,
+}: {
+  fields: ProfileEditFields | null;
+  setFields: (fields: ProfileEditFields) => void;
+  onSave: () => void;
+  isSaving: boolean;
+  saveError: string | null;
+  saveSuccess: boolean;
+  isLoading: boolean;
+}) {
+  if (isLoading || !fields) return <p className="body-copy">Loading profile data…</p>;
+
+  function updateField<K extends keyof ProfileEditFields>(key: K, value: ProfileEditFields[K]) {
+    setFields({ ...fields!, [key]: value });
+  }
+
+  function updateSkill(index: number, key: 'skill' | 'years_experience', value: string | number) {
+    const newSkills = fields!.skills.map((s, i) => (i === index ? { ...s, [key]: value } : s));
+    updateField('skills', newSkills);
+  }
+
+  return (
+    <div className="field-list">
+      <div className="field">
+        <span>Name</span>
+        <input value={fields.name} onChange={(e) => updateField('name', e.target.value)} />
+      </div>
+      <div className="field">
+        <span>Company</span>
+        <input value={fields.reply_company} onChange={(e) => updateField('reply_company', e.target.value)} />
+      </div>
+      <div className="field">
+        <span>Location</span>
+        <input value={fields.location} onChange={(e) => updateField('location', e.target.value)} />
+      </div>
+      <div className="field">
+        <span>Seniority</span>
+        <select value={fields.seniority} onChange={(e) => updateField('seniority', e.target.value)}>
+          <option value="junior">Junior</option>
+          <option value="mid">Mid</option>
+          <option value="senior">Senior</option>
+          <option value="principal">Principal</option>
+        </select>
+      </div>
+      <div className="field">
+        <span>Availability</span>
+        <select value={fields.availability_status} onChange={(e) => updateField('availability_status', e.target.value)}>
+          <option value="available">Available now</option>
+          <option value="on_project">On project</option>
+          <option value="on_bench">On bench</option>
+          <option value="rolling_off">Rolling off</option>
+        </select>
+      </div>
+      <div className="field">
+        <span>Current project</span>
+        <input value={fields.current_project_name} onChange={(e) => updateField('current_project_name', e.target.value)} placeholder="None" />
+      </div>
+      <div>
+        <span className="field"><span>Skills</span></span>
+        {fields.skills.map((s, i) => (
+          <div key={i} className="filters" style={{ marginTop: '4px' }}>
+            <input value={s.skill} onChange={(e) => updateSkill(i, 'skill', e.target.value)} placeholder="Skill" />
+            <input
+              type="number"
+              value={s.years_experience}
+              min={0}
+              step={0.5}
+              onChange={(e) => updateSkill(i, 'years_experience', Number(e.target.value))}
+              style={{ width: '80px' }}
+              placeholder="Years"
+            />
+            <button onClick={() => updateField('skills', fields.skills.filter((_, j) => j !== i))}>Remove</button>
+          </div>
+        ))}
+        <button style={{ marginTop: '8px' }} onClick={() => updateField('skills', [...fields.skills, { skill: '', years_experience: 0 }])}>Add skill</button>
+      </div>
+      {saveSuccess && <Evidence>Profile saved successfully.</Evidence>}
+      {saveError && <Warning>{saveError}</Warning>}
+      <button disabled={isSaving} onClick={onSave}>{isSaving ? 'Saving…' : 'Save changes'}</button>
     </div>
   );
 }

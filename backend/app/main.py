@@ -308,6 +308,58 @@ def get_profile(
     )
 
 
+class ProfilePatch(BaseModel):
+    name: str | None = None
+    reply_company: str | None = None
+    location: str | None = None
+    seniority: str | None = None
+    availability_status: str | None = None
+    current_project_name: str | None = None
+    skills: list[SkillOut] | None = None
+
+
+@app.patch("/profile/{employee_id}", response_model=ProfileOut)
+def patch_profile(
+    employee_id: str,
+    patch: ProfilePatch,
+    db: sqlite3.Connection = Depends(get_db),
+    collection: chromadb.Collection = Depends(get_collection),
+) -> ProfileOut:
+    row = db.execute(
+        "SELECT id FROM employees WHERE id = ?",
+        (employee_id,),
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Employee {employee_id!r} not found.")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    update_data = patch.model_dump(exclude_unset=True)
+    skills_to_update = update_data.pop("skills", None)
+
+    set_parts: dict[str, Any] = {"last_updated": now}
+    set_parts.update(update_data)
+
+    set_clause = ", ".join(f"{k} = ?" for k in set_parts)
+    db.execute(
+        f"UPDATE employees SET {set_clause} WHERE id = ?",
+        [*set_parts.values(), employee_id],
+    )
+
+    if skills_to_update is not None:
+        db.execute("DELETE FROM employee_skills WHERE employee_id = ?", (employee_id,))
+        if skills_to_update:
+            db.executemany(
+                "INSERT INTO employee_skills (employee_id, skill, years_experience) VALUES (?, ?, ?)",
+                [(employee_id, s["skill"], s["years_experience"]) for s in skills_to_update],
+            )
+
+    db.commit()
+
+    return get_profile(employee_id, db, collection)
+
+
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", tempfile.gettempdir() + "/talent_uploads")
 
 

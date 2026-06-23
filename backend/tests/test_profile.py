@@ -178,3 +178,62 @@ def test_is_stale_helper_one_day_before_boundary():
     boundary = now.replace(year=year, month=month, day=min(now.day, max_day), microsecond=0)
     just_before = boundary + timedelta(days=1)
     assert _is_stale(just_before.isoformat()) is False
+
+
+def test_patch_profile_single_field(test_client):
+    response = test_client.patch("/profile/emp_001", json={"location": "Bristol"})
+    assert response.status_code == 200
+    assert response.json()["location"] == "Bristol"
+    get_response = test_client.get("/profile/emp_001")
+    assert get_response.json()["location"] == "Bristol"
+
+
+def test_patch_profile_multiple_fields(test_client):
+    response = test_client.patch(
+        "/profile/emp_001",
+        json={"name": "Maya O.", "seniority": "senior", "availability_status": "available"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Maya O."
+    assert data["seniority"] == "senior"
+    assert data["availability_status"] == "available"
+
+
+def test_patch_profile_updates_last_updated(test_client):
+    response = test_client.patch("/profile/emp_001", json={"location": "Edinburgh"})
+    assert response.status_code == 200
+    patched_ts = response.json()["last_updated"]
+    assert patched_ts
+    get_response = test_client.get("/profile/emp_001")
+    assert get_response.json()["last_updated"] == patched_ts
+
+
+def test_patch_profile_skills(test_client):
+    new_skills = [{"skill": "Go", "years_experience": 2.0}, {"skill": "Rust", "years_experience": 1.0}]
+    response = test_client.patch("/profile/emp_001", json={"skills": new_skills})
+    assert response.status_code == 200
+    returned_skills = {s["skill"] for s in response.json()["skills"]}
+    assert returned_skills == {"Go", "Rust"}
+    get_response = test_client.get("/profile/emp_001")
+    assert {s["skill"] for s in get_response.json()["skills"]} == {"Go", "Rust"}
+
+
+def test_patch_profile_clear_current_project(test_client):
+    response = test_client.patch("/profile/emp_001", json={"current_project_name": None})
+    assert response.status_code == 200
+    assert response.json()["current_project_name"] is None
+
+
+def test_patch_profile_not_found(test_client):
+    response = test_client.patch("/profile/emp_999", json={"location": "London"})
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_patch_profile_appears_in_candidates(test_client):
+    test_client.patch("/profile/emp_001", json={"availability_status": "available"})
+    candidates_response = test_client.get("/candidates")
+    emp = next((c for c in candidates_response.json() if c["id"] == "emp_001"), None)
+    assert emp is not None
+    assert emp["availability_status"] == "available"
