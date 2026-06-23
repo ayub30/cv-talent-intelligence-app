@@ -484,6 +484,93 @@ def patch_profile(
     return get_profile(employee_id, db, collection)
 
 
+class SkillAnalyticsOut(BaseModel):
+    skill: str
+    supply_pct: float
+    demand_pct: float
+
+
+@app.get("/analytics/skills", response_model=list[SkillAnalyticsOut])
+def get_skill_analytics(
+    db: sqlite3.Connection = Depends(get_db),
+    _auth: str = Depends(require_auth),
+) -> list[SkillAnalyticsOut]:
+    total_row = db.execute("SELECT COUNT(*) as n FROM employees").fetchone()
+    total = total_row["n"] if total_row else 0
+    if total == 0:
+        return []
+
+    rows = db.execute(
+        """
+        SELECT
+            LOWER(es.skill) AS skill,
+            COUNT(DISTINCT es.employee_id) AS with_skill,
+            COUNT(DISTINCT CASE
+                WHEN e.availability_status IN ('on_project', 'rolling_off')
+                THEN es.employee_id END) AS deployed_with_skill
+        FROM employee_skills es
+        JOIN employees e ON e.id = es.employee_id
+        GROUP BY LOWER(es.skill)
+        ORDER BY with_skill DESC
+        LIMIT 10
+        """
+    ).fetchall()
+
+    return [
+        SkillAnalyticsOut(
+            skill=row["skill"],
+            supply_pct=round(row["with_skill"] / total * 100, 1),
+            demand_pct=round(row["deployed_with_skill"] / row["with_skill"] * 100, 1)
+            if row["with_skill"] > 0
+            else 0.0,
+        )
+        for row in rows
+    ]
+
+
+class CompanyOut(BaseModel):
+    name: str
+    employee_count: int
+    indexed_cv_count: int
+    completeness_score: float
+
+
+@app.get("/companies", response_model=list[CompanyOut])
+def get_companies(
+    db: sqlite3.Connection = Depends(get_db),
+    _auth: str = Depends(require_auth),
+) -> list[CompanyOut]:
+    rows = db.execute(
+        """
+        SELECT
+            e.reply_company AS name,
+            COUNT(DISTINCT e.id) AS employee_count,
+            COUNT(DISTINCT e.chroma_doc_id) AS indexed_cv_count,
+            ROUND(
+                100.0 * SUM(CASE WHEN esc.skill_count >= 3 THEN 1 ELSE 0 END) / COUNT(e.id)
+            ) AS completeness_score
+        FROM employees e
+        LEFT JOIN (
+            SELECT employee_id, COUNT(*) AS skill_count
+            FROM employee_skills
+            GROUP BY employee_id
+        ) esc ON e.id = esc.employee_id
+        GROUP BY e.reply_company
+        ORDER BY e.reply_company
+        """
+    ).fetchall()
+
+    return [
+        CompanyOut(
+            name=row["name"],
+            employee_count=row["employee_count"],
+            indexed_cv_count=row["indexed_cv_count"],
+            completeness_score=row["completeness_score"] or 0.0,
+        )
+        for row in rows
+    ]
+
+
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", tempfile.gettempdir() + "/talent_uploads")
 
 

@@ -1132,48 +1132,155 @@ function Ingestion({ onUploadSuccess }: { onUploadSuccess: () => void }) {
   );
 }
 
+type ApiCompany = {
+  name: string;
+  employee_count: number;
+  indexed_cv_count: number;
+  completeness_score: number;
+};
+
 function CompanyDirectory() {
-  const [selected, setSelected] = useState<typeof companies[number]>(companies[0]);
+  const [apiCompanies, setApiCompanies] = useState<ApiCompany[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/companies')
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load companies: ${res.status}`);
+        return res.json() as Promise<ApiCompany[]>;
+      })
+      .then((data) => {
+        setApiCompanies(data);
+        if (data.length > 0) setSelectedName(data[0].name);
+        setIsLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Failed to load companies.');
+        setIsLoading(false);
+      });
+  }, []);
+
+  const selected = apiCompanies.find((c) => c.name === selectedName) ?? apiCompanies[0] ?? null;
+
+  if (isLoading) {
+    return (
+      <div className="two-col wide-left">
+        <Panel title="Company directory">
+          <p className="body-copy">Loading company data…</p>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="two-col wide-left">
+        <Panel title="Company directory">
+          <Warning>{error}</Warning>
+        </Panel>
+      </div>
+    );
+  }
+
   return (
     <div className="two-col wide-left">
       <Panel title="Company directory">
         <div className="company-grid">
-          {companies.map((company) => (
-            <button key={company[0]} className={selected[0] === company[0] ? 'company-card selected' : 'company-card'} onClick={() => setSelected(company)}>
-              <strong>{company[0]}</strong>
-              <small>{company[1]}</small>
-              <Score label="Complete" value={company[3]} />
+          {apiCompanies.map((company) => (
+            <button
+              key={company.name}
+              className={selected?.name === company.name ? 'company-card selected' : 'company-card'}
+              onClick={() => setSelectedName(company.name)}
+            >
+              <strong>{company.name}</strong>
+              <small>{company.employee_count} employees</small>
+              <Score label="Complete" value={company.completeness_score} />
             </button>
           ))}
         </div>
       </Panel>
-      <Panel title={selected[0]}>
-        <Field label="Focus" value={selected[1]} />
-        <Field label="Employees" value={String(selected[2])} />
-        <Field label="Indexed CVs" value={String(selected[4])} />
-        <Field label="Location" value={selected[5]} />
-      </Panel>
+      {selected && (
+        <Panel title={selected.name}>
+          <Field label="Employees" value={String(selected.employee_count)} />
+          <Field label="Indexed CVs" value={String(selected.indexed_cv_count)} />
+          <Field label="Completeness" value={`${selected.completeness_score}%`} />
+        </Panel>
+      )}
     </div>
   );
 }
 
+type ApiSkillAnalytics = {
+  skill: string;
+  supply_pct: number;
+  demand_pct: number;
+};
+
 function Analytics() {
+  const [apiSkills, setApiSkills] = useState<ApiSkillAnalytics[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/analytics/skills')
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load analytics: ${res.status}`);
+        return res.json() as Promise<ApiSkillAnalytics[]>;
+      })
+      .then((data) => {
+        setApiSkills(data);
+        setIsLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Failed to load analytics.');
+        setIsLoading(false);
+      });
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="two-col">
+        <Panel title="Demand vs supply">
+          <p className="body-copy">Loading analytics data…</p>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="two-col">
+        <Panel title="Demand vs supply">
+          <Warning>{error}</Warning>
+        </Panel>
+      </div>
+    );
+  }
+
   return (
     <div className="two-col">
       <Panel title="Demand vs supply">
         <div className="bar-list">
-          {skills.map(([skill, demand, supply]) => (
-            <div key={skill}>
-              <div className="bar-label"><strong>{skill}</strong><span>Demand {demand}% / supply {supply}%</span></div>
-              <Bar value={demand} tone="cyan" />
-              <Bar value={supply} tone="slate" />
+          {apiSkills.map((item) => (
+            <div key={item.skill}>
+              <div className="bar-label">
+                <strong>{item.skill}</strong>
+                <span>Demand {item.demand_pct}% / supply {item.supply_pct}%</span>
+              </div>
+              <Bar value={item.demand_pct} tone="cyan" />
+              <Bar value={item.supply_pct} tone="slate" />
             </div>
           ))}
         </div>
       </Panel>
       <Panel title="Gap register">
-        <DataTable headers={['Capability', 'Demand', 'Supply', 'Risk']} rows={skills.map(([skill, demand, supply, risk]) => [skill, `${demand}%`, `${supply}%`, risk])} />
-        <Evidence>Current demand is shifting toward Azure data migration and RAG-backed assistants. The biggest commercial risk is evidence quality, not raw headcount.</Evidence>
+        <DataTable
+          headers={['Capability', 'Demand', 'Supply']}
+          rows={apiSkills.map((item) => [item.skill, `${item.demand_pct}%`, `${item.supply_pct}%`])}
+        />
+        <Evidence>Demand reflects skill utilisation on active projects; supply reflects share of indexed workforce with each skill.</Evidence>
       </Panel>
     </div>
   );
