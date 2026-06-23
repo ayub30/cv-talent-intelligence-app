@@ -1,0 +1,62 @@
+# Models & weights — never commit large binaries
+*.safetensors
+*.bin
+*.gguf
+*.npz
+*.pt
+*.pth
+llama-*/
+models/
+adapters*/
+lora-*/
+
+# Uploaded CVs — sensitive employee data
+uploads/
+*.pdf
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+chroma/
+chromadb/
+
+# Environment variables — secrets
+.env
+.env.*
+!.env.example
+
+# Generated datasets
+data/
+datasets/
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
