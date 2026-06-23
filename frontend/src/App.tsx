@@ -145,6 +145,12 @@ const defaultContract =
   'Healthcare client needs a senior Azure data engineering team to migrate clinical datasets, build governed analytics, and support an AI knowledge assistant with cited retrieval.';
 
 export function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   const [page, setPage] = useState<Page>('dashboard');
   const [selectedId, setSelectedId] = useState<string>('');
   const [query, setQuery] = useState('');
@@ -167,12 +173,20 @@ export function App() {
   const [profileRefreshKey, setProfileRefreshKey] = useState(0);
 
   function refreshCandidates() {
+    setIsCandidatesLoading(true);
     fetch('/candidates')
       .then((res) => {
+        if (res.status === 401) {
+          setIsAuthenticated(false);
+          setIsCandidatesLoading(false);
+          return null;
+        }
         if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
+        setIsAuthenticated(true);
         return res.json() as Promise<ApiCandidate[]>;
       })
       .then((data) => {
+        if (!data) return;
         setCandidates(data.map(mapApiCandidate));
         setIsCandidatesLoading(false);
       })
@@ -180,6 +194,37 @@ export function App() {
         setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
         setIsCandidatesLoading(false);
       });
+  }
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      if (res.status === 401) {
+        setLoginError('Invalid email or password.');
+        return;
+      }
+      if (!res.ok) throw new Error(`Login failed: ${res.status}`);
+      setIsAuthenticated(true);
+      refreshCandidates();
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Login failed.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function handleLogout() {
+    await fetch('/auth/logout', { method: 'POST' });
+    setIsAuthenticated(false);
+    setCandidates([]);
+    setPage('dashboard');
   }
 
   useEffect(() => {
@@ -196,10 +241,12 @@ export function App() {
     setProfileError(null);
     fetch(`/profile/${selected.id}`)
       .then((res) => {
+        if (res.status === 401) { setIsAuthenticated(false); return null; }
         if (!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
         return res.json() as Promise<ApiProfile>;
       })
       .then((data) => {
+        if (!data) return;
         setProfileApiData(data);
         setIsProfileLoading(false);
       })
@@ -256,6 +303,24 @@ export function App() {
     }
   }
 
+  if (isAuthenticated === null) {
+    return <div className="auth-loading">Loading…</div>;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginPage
+        email={loginEmail}
+        setEmail={setLoginEmail}
+        password={loginPassword}
+        setPassword={setLoginPassword}
+        error={loginError}
+        isLoading={isLoggingIn}
+        onSubmit={handleLogin}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -298,6 +363,7 @@ export function App() {
               Match
             </button>
           </div>
+          <button className="logout-btn" onClick={handleLogout}>Log out</button>
         </header>
 
         <section className="content">
@@ -369,6 +435,67 @@ export function App() {
           {page === 'analytics' && <Analytics />}
         </section>
       </main>
+    </div>
+  );
+}
+
+function LoginPage({
+  email,
+  setEmail,
+  password,
+  setPassword,
+  error,
+  isLoading,
+  onSubmit,
+}: {
+  email: string;
+  setEmail: (v: string) => void;
+  password: string;
+  setPassword: (v: string) => void;
+  error: string | null;
+  isLoading: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+}) {
+  return (
+    <div className="login-page">
+      <div className="login-card">
+        <div className="login-brand">
+          <div className="brand-mark">TG</div>
+          <div>
+            <strong>TalentGraph</strong>
+            <span>CV intelligence</span>
+          </div>
+        </div>
+        <h2>Sign in</h2>
+        <form className="login-form" onSubmit={onSubmit}>
+          <label>
+            Email
+            <input
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="admin@reply.com"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+            />
+          </label>
+          {error && <div className="login-error"><ExclamationTriangleIcon /> {error}</div>}
+          <button type="submit" className="login-submit" disabled={isLoading}>
+            {isLoading ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
