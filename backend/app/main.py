@@ -226,6 +226,58 @@ async def ask(payload: AskRequest) -> AskResponse:
     )
 
 
+class ProfileOut(BaseModel):
+    id: str
+    name: str
+    reply_company: str
+    location: str
+    seniority: str
+    availability_status: str
+    current_project_name: str | None
+    last_updated: str
+    chroma_doc_id: str
+    skills: list[SkillOut]
+    cv_text: str
+
+
+@app.get("/profile/{employee_id}", response_model=ProfileOut)
+def get_profile(
+    employee_id: str,
+    db: sqlite3.Connection = Depends(get_db),
+    collection: chromadb.Collection = Depends(get_collection),
+) -> ProfileOut:
+    row = db.execute(
+        "SELECT id, name, reply_company, location, seniority, availability_status, "
+        "current_project_name, last_updated, chroma_doc_id FROM employees WHERE id = ?",
+        (employee_id,),
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Employee {employee_id!r} not found.")
+
+    skill_rows = db.execute(
+        "SELECT skill, years_experience FROM employee_skills WHERE employee_id = ?",
+        (employee_id,),
+    ).fetchall()
+
+    result = collection.get(ids=[row["chroma_doc_id"]], include=["documents"])
+    cv_text = result["documents"][0] if result["documents"] else ""
+
+    return ProfileOut(
+        id=row["id"],
+        name=row["name"],
+        reply_company=row["reply_company"],
+        location=row["location"],
+        seniority=row["seniority"],
+        availability_status=row["availability_status"],
+        current_project_name=row["current_project_name"],
+        last_updated=row["last_updated"],
+        chroma_doc_id=row["chroma_doc_id"],
+        skills=[SkillOut(skill=sr["skill"], years_experience=sr["years_experience"]) for sr in skill_rows],
+        cv_text=cv_text or "",
+    )
+
+
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", tempfile.gettempdir() + "/talent_uploads")
 
 

@@ -146,6 +146,9 @@ export function App() {
   const [filterCompany, setFilterCompany] = useState('');
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterSeniority, setFilterSeniority] = useState('');
+  const [profileCvText, setProfileCvText] = useState<string | null>(null);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   function refreshCandidates() {
     fetch('/candidates')
@@ -169,6 +172,27 @@ export function App() {
   }, []);
 
   const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
+
+  useEffect(() => {
+    if (!selected) return;
+    setIsProfileLoading(true);
+    setProfileCvText(null);
+    setProfileError(null);
+    fetch(`/profile/${selected.id}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
+        return res.json() as Promise<{ cv_text: string }>;
+      })
+      .then((data) => {
+        setProfileCvText(data.cv_text);
+        setIsProfileLoading(false);
+      })
+      .catch((err: unknown) => {
+        setProfileError(err instanceof Error ? err.message : 'Failed to load profile.');
+        setIsProfileLoading(false);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
 
   const uniqueCompanies = useMemo(() => [...new Set(candidates.map((c) => c.company))].sort(), [candidates]);
 
@@ -308,7 +332,14 @@ export function App() {
             />
           )}
           {page === 'profile' && selected && (
-            <Profile candidate={selected} shortlisted={shortlist.includes(selected.id)} toggleShortlist={toggleShortlist} />
+            <Profile
+              candidate={selected}
+              shortlisted={shortlist.includes(selected.id)}
+              toggleShortlist={toggleShortlist}
+              cvText={profileCvText}
+              isProfileLoading={isProfileLoading}
+              profileError={profileError}
+            />
           )}
           {page === 'shortlist' && <Shortlist ids={shortlist} candidates={candidates} toggleShortlist={toggleShortlist} />}
           {page === 'ingestion' && <Ingestion onUploadSuccess={refreshCandidates} />}
@@ -531,8 +562,25 @@ function AIWorkspace({
   );
 }
 
-function Profile({ candidate, shortlisted, toggleShortlist }: { candidate: Candidate; shortlisted: boolean; toggleShortlist: (id: string) => void }) {
+function Profile({
+  candidate,
+  shortlisted,
+  toggleShortlist,
+  cvText,
+  isProfileLoading,
+  profileError,
+}: {
+  candidate: Candidate;
+  shortlisted: boolean;
+  toggleShortlist: (id: string) => void;
+  cvText: string | null;
+  isProfileLoading: boolean;
+  profileError: string | null;
+}) {
   const [tab, setTab] = useState('Overview');
+  const evidenceItems = cvText
+    ? cvText.split('. ').map((s) => s.trim()).filter(Boolean)
+    : [];
   return (
     <div className="two-col">
       <Panel title={candidate.name} action={<button onClick={() => toggleShortlist(candidate.id)}>{shortlisted ? 'Shortlisted' : 'Add to shortlist'}</button>}>
@@ -546,8 +594,23 @@ function Profile({ candidate, shortlisted, toggleShortlist }: { candidate: Candi
       </Panel>
       <Panel title="Profile detail">
         <div className="tabs">{['Overview', 'CV evidence', 'Gaps'].map((item) => <button key={item} className={tab === item ? 'active-tab' : ''} onClick={() => setTab(item)}>{item}</button>)}</div>
-        {tab === 'Overview' && <p className="body-copy">Profile available — full CV evidence coming in a future update.</p>}
-        {tab === 'CV evidence' && (candidate.evidence.length ? candidate.evidence.map((item) => <Evidence key={item}>{item}</Evidence>) : <p className="body-copy">No CV evidence indexed yet.</p>)}
+        {tab === 'Overview' && (
+          <div className="field-list">
+            <Field label="Seniority" value={candidate.seniority} />
+            <Field label="Availability" value={candidate.availability} />
+            <Field label="Company" value={candidate.company} />
+            <Field label="Location" value={candidate.location} />
+          </div>
+        )}
+        {tab === 'CV evidence' && (
+          isProfileLoading
+            ? <p className="body-copy">Loading CV evidence…</p>
+            : profileError
+              ? <Warning>{profileError}</Warning>
+              : evidenceItems.length
+                ? evidenceItems.map((item, i) => <Evidence key={i}>{item}</Evidence>)
+                : <p className="body-copy">No CV evidence indexed yet.</p>
+        )}
         {tab === 'Gaps' && (candidate.gaps.length ? candidate.gaps.map((item) => <Warning key={item}>{item}</Warning>) : <p className="body-copy">No gaps recorded.</p>)}
       </Panel>
     </div>
