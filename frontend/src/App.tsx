@@ -147,7 +147,7 @@ export function App() {
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterSeniority, setFilterSeniority] = useState('');
 
-  useEffect(() => {
+  function refreshCandidates() {
     fetch('/candidates')
       .then((res) => {
         if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
@@ -161,6 +161,11 @@ export function App() {
         setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
         setIsCandidatesLoading(false);
       });
+  }
+
+  useEffect(() => {
+    refreshCandidates();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
@@ -306,7 +311,7 @@ export function App() {
             <Profile candidate={selected} shortlisted={shortlist.includes(selected.id)} toggleShortlist={toggleShortlist} />
           )}
           {page === 'shortlist' && <Shortlist ids={shortlist} candidates={candidates} toggleShortlist={toggleShortlist} />}
-          {page === 'ingestion' && <Ingestion />}
+          {page === 'ingestion' && <Ingestion onUploadSuccess={refreshCandidates} />}
           {page === 'companies' && <CompanyDirectory />}
           {page === 'analytics' && <Analytics />}
         </section>
@@ -592,7 +597,7 @@ type IngestResult = {
   extracted: IngestExtracted;
 };
 
-function Ingestion() {
+function Ingestion({ onUploadSuccess }: { onUploadSuccess: () => void }) {
   const [issuesOnly, setIssuesOnly] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -622,6 +627,7 @@ function Ingestion() {
       }
       const data = await response.json() as IngestResult;
       setUploadResult(data);
+      onUploadSuccess();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
