@@ -1,5 +1,6 @@
 import calendar
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -16,6 +17,7 @@ from .auth import create_access_token, require_auth, verify_password
 from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
+from .tools import get_profile_cv, query_candidates, search_cvs
 
 
 DB_PATH = os.getenv("DB_PATH", "talent.db")
@@ -201,8 +203,7 @@ def get_candidates(
     ]
 
 
-@app.post("/ask", response_model=AskResponse)
-def ask(payload: AskRequest, _auth: str = Depends(require_auth)) -> AskResponse:
+def _mock_response() -> AskResponse:
     return AskResponse(
         source="mock",
         answer=(
@@ -231,6 +232,121 @@ def ask(payload: AskRequest, _auth: str = Depends(require_auth)) -> AskResponse:
             },
         ],
     )
+
+
+def _infer_role(cv_text: str, seniority: str, company: str) -> str:
+    m = re.search(r"\bis an? ([A-Z][A-Za-z &\-]+?) at\b", cv_text)
+    if m:
+        return m.group(1).strip()
+    return f"{seniority.capitalize()} at {company}" if seniority else "Professional"
+
+
+def _extract_evidence(cv_text: str, question: str, max_len: int = 160) -> str:
+    if not cv_text:
+        return "See CV for details."
+    q_words = set(question.lower().split())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cv_text) if s.strip()]
+    best, best_score = sentences[0] if sentences else cv_text, -1
+    for s in sentences:
+        overlap = len(q_words & set(s.lower().split()))
+        if overlap > best_score:
+            best_score, best = overlap, s
+    return (best[:max_len] + "...") if len(best) > max_len else best
+
+
+def _keyword_score(cv_text: str, question: str) -> int:
+    q_words = set(question.lower().split()) - {"the", "a", "an", "for", "who", "is", "in", "of"}
+    cv_words = set(cv_text.lower().split())
+    overlap = len(q_words & cv_words)
+    return min(75, overlap * 8)
+
+
+def _heuristic_ask(
+    question: str,
+    filters: dict[str, Any],
+    db: sqlite3.Connection,
+    collection: chromadb.Collection,
+) -> AskResponse:
+    # Attempt semantic search; silently skip if embedding model unavailable
+    semantic: dict[str, dict[str, Any]] = {}
+    try:
+        for m in search_cvs(collection, question, n_results=10):
+            semantic[m["employee_id"]] = m
+    except Exception:
+        pass
+
+    # SQL filter: apply user-supplied filters, fall back to all employees
+    sql_filters = {
+        k: v
+        for k, v in filters.items()
+        if k in ("skill", "min_years", "seniority", "availability", "company", "location")
+    }
+    candidates = query_candidates(db, sql_filters)
+    if not candidates:
+        candidates = query_candidates(db, {})
+
+    seen: set[str] = set()
+    ranked: list[dict[str, Any]] = []
+
+    # Semantic matches first (carry higher scores)
+    for emp_id, sem in semantic.items():
+        if emp_id in seen:
+            continue
+        seen.add(emp_id)
+        row = db.execute(
+            "SELECT seniority, reply_company FROM employees WHERE id = ?", (emp_id,)
+        ).fetchone()
+        if not row:
+            continue
+        ranked.append(
+            {
+                "name": sem["name"],
+                "role": _infer_role(sem["cv_text"], row["seniority"], row["reply_company"]),
+                "score": sem["score"],
+                "evidence": _extract_evidence(sem["cv_text"], question),
+                "employee_id": emp_id,
+            }
+        )
+
+    # SQL-only candidates (keyword scored)
+    for c in candidates:
+        emp_id = c["employee_id"]
+        if emp_id in seen:
+            continue
+        seen.add(emp_id)
+        cv = get_profile_cv(collection, c["chroma_doc_id"])
+        ranked.append(
+            {
+                "name": c["name"],
+                "role": _infer_role(cv, c["seniority"], c["company"]),
+                "score": _keyword_score(cv, question),
+                "evidence": _extract_evidence(cv, question),
+                "employee_id": emp_id,
+            }
+        )
+
+    if not ranked:
+        return _mock_response()
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    top = ranked[:5]
+    names = ", ".join(m["name"] for m in top[:3])
+    answer = f"Based on CV analysis, top candidates for your query: {names}."
+
+    return AskResponse(source="tools", answer=answer, matches=top)
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask(
+    payload: AskRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
+) -> AskResponse:
+    try:
+        return _heuristic_ask(payload.question, payload.filters, db, collection)
+    except Exception:
+        return _mock_response()
 
 
 STALE_MONTHS = 6

@@ -48,10 +48,10 @@ def test_ask_response_has_correct_shape(test_client):
     assert isinstance(data["source"], str)
 
 
-def test_ask_mock_source(test_client):
+def test_ask_source_field_present(test_client):
     response = test_client.post("/ask", json={"question": "Find the best team for this contract"})
     assert response.status_code == 200
-    assert response.json()["source"] == "mock"
+    assert response.json()["source"] in ("tools", "mock", "llm")
 
 
 def test_ask_matches_have_required_fields(test_client):
@@ -75,3 +75,26 @@ def test_ask_without_auth_returns_401():
     with TestClient(app, raise_server_exceptions=True) as client:
         response = client.post("/ask", json={"question": "Who should I hire?"})
     assert response.status_code == 401
+
+
+def test_ask_returns_non_empty_matches(test_client):
+    response = test_client.post(
+        "/ask", json={"question": "Who has Azure experience?"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["matches"]) > 0
+    for match in data["matches"]:
+        assert "name" in match
+        assert "role" in match
+        assert "score" in match
+        assert "evidence" in match
+
+
+def test_ask_tools_source_when_db_available(test_client):
+    response = test_client.post(
+        "/ask", json={"question": "Find senior cloud architects"}
+    )
+    assert response.status_code == 200
+    # When real databases are available the endpoint uses the tool-calling path
+    assert response.json()["source"] in ("tools", "llm")
