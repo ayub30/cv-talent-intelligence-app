@@ -1,11 +1,13 @@
 import os
+import shutil
 import sqlite3
+import tempfile
 from contextlib import asynccontextmanager
 from typing import Any
 
 import chromadb
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -219,4 +221,53 @@ async def ask(payload: AskRequest) -> AskResponse:
         source="llm",
         answer=data.get("answer") or data.get("response") or "The LLM returned no answer field.",
         matches=data.get("matches", []),
+    )
+
+
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", tempfile.gettempdir() + "/talent_uploads")
+
+
+class ExtractedSkill(BaseModel):
+    skill: str
+    years_experience: float
+
+
+class IngestResponse(BaseModel):
+    success: bool
+    filename: str
+    extracted: dict[str, Any]
+
+
+@app.post("/ingest", response_model=IngestResponse)
+async def ingest(file: UploadFile = File(...)) -> IngestResponse:
+    if not file.filename:
+        raise HTTPException(status_code=422, detail="No file provided.")
+
+    is_pdf = (file.content_type == "application/pdf") or file.filename.lower().endswith(".pdf")
+    if not is_pdf:
+        raise HTTPException(status_code=422, detail="File must be a PDF.")
+
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    dest_path = os.path.join(UPLOADS_DIR, file.filename)
+    try:
+        with open(dest_path, "wb") as dest:
+            shutil.copyfileobj(file.file, dest)
+    finally:
+        await file.close()
+
+    return IngestResponse(
+        success=True,
+        filename=file.filename,
+        extracted={
+            "name": "Extracted Candidate",
+            "reply_company": "Reply Group",
+            "location": "London",
+            "seniority": "senior",
+            "availability_status": "available",
+            "current_project_name": None,
+            "skills": [
+                {"skill": "Python", "years_experience": 5.0},
+                {"skill": "Azure", "years_experience": 3.0},
+            ],
+        },
     )

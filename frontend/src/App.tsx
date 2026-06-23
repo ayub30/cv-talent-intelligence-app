@@ -576,8 +576,29 @@ function Shortlist({ ids, candidates, toggleShortlist }: { ids: string[]; candid
   );
 }
 
+type IngestExtracted = {
+  name: string;
+  reply_company: string;
+  location: string;
+  seniority: string;
+  availability_status: string;
+  current_project_name: string | null;
+  skills: Array<{ skill: string; years_experience: number }>;
+};
+
+type IngestResult = {
+  success: boolean;
+  filename: string;
+  extracted: IngestExtracted;
+};
+
 function Ingestion() {
   const [issuesOnly, setIssuesOnly] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const rows = [
     ['Northstar Digital CV folder', 284, 268, 4, 12, 'Healthy'],
     ['Atlas Advisory HRIS export', 241, 221, 7, 13, 'Review'],
@@ -585,6 +606,29 @@ function Ingestion() {
     ['Fortis Risk CV pack', 138, 132, 1, 5, 'Healthy'],
   ];
   const visible = issuesOnly ? rows.filter((row) => Number(row[3]) > 3 || Number(row[4]) > 12) : rows;
+
+  async function handleUpload() {
+    if (!selectedFile) return;
+    setIsUploading(true);
+    setUploadResult(null);
+    setUploadError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      const response = await fetch('/ingest', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const detail = await response.json().then((d: { detail?: string }) => d.detail).catch(() => null);
+        throw new Error(detail ?? `Upload failed: ${response.status}`);
+      }
+      const data = await response.json() as IngestResult;
+      setUploadResult(data);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed.');
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
   return (
     <div className="stack">
       <div className="metric-grid">
@@ -592,6 +636,43 @@ function Ingestion() {
         <Metric icon={ExclamationTriangleIcon} label="Needs review" value="1,148" detail="Stale or failed" />
         <Metric icon={ArrowPathIcon} label="Skill aliases" value="612" detail="Mapped to taxonomy" />
       </div>
+      <Panel title="Upload CV">
+        <div className="filters">
+          <input
+            type="file"
+            accept=".pdf,application/pdf"
+            onChange={(event) => {
+              setSelectedFile(event.target.files?.[0] ?? null);
+              setUploadResult(null);
+              setUploadError(null);
+            }}
+          />
+          <button disabled={!selectedFile || isUploading} onClick={handleUpload}>
+            {isUploading ? 'Uploading…' : 'Upload'}
+          </button>
+        </div>
+        {uploadResult && (
+          <div>
+            <Evidence>Uploaded {uploadResult.filename} — extraction preview below.</Evidence>
+            <div className="field-list">
+              <Field label="Name" value={uploadResult.extracted.name} />
+              <Field label="Company" value={uploadResult.extracted.reply_company} />
+              <Field label="Location" value={uploadResult.extracted.location} />
+              <Field label="Seniority" value={uploadResult.extracted.seniority} />
+              <Field label="Availability" value={uploadResult.extracted.availability_status} />
+              {uploadResult.extracted.current_project_name && (
+                <Field label="Current project" value={uploadResult.extracted.current_project_name} />
+              )}
+            </div>
+            <div className="pills">
+              {uploadResult.extracted.skills.map((s) => (
+                <Pill key={s.skill}>{s.skill} ({s.years_experience}y)</Pill>
+              ))}
+            </div>
+          </div>
+        )}
+        {uploadError && <Warning>{uploadError}</Warning>}
+      </Panel>
       <Panel title="CV ingestion health" action={<label className="inline-check"><input type="checkbox" checked={issuesOnly} onChange={(event) => setIssuesOnly(event.target.checked)} /> Issues only</label>}>
         <DataTable headers={['Source', 'Total', 'Indexed', 'Failed', 'Stale', 'Status']} rows={visible} />
       </Panel>
