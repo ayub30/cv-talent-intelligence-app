@@ -17,6 +17,7 @@ from .auth import create_access_token, require_auth, verify_password
 from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
+from .llm import generate_answer, init_llm, is_loaded
 from .tools import get_profile_cv, query_candidates, search_cvs
 
 
@@ -36,6 +37,8 @@ async def lifespan(app: FastAPI):
     collection = init_collection(chroma_client)
     seed_collection(collection)
     app.state.chroma_collection = collection
+
+    init_llm()
 
     yield
 
@@ -344,7 +347,15 @@ def ask(
     _auth: str = Depends(require_auth),
 ) -> AskResponse:
     try:
-        return _heuristic_ask(payload.question, payload.filters, db, collection)
+        heuristic = _heuristic_ask(payload.question, payload.filters, db, collection)
+        if is_loaded():
+            try:
+                answer = generate_answer(payload.question, heuristic.matches)
+                return AskResponse(source="llm", answer=answer, matches=heuristic.matches)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error("LLM inference failed: %s", exc)
+        return heuristic
     except Exception:
         return _mock_response()
 
