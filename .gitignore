@@ -7,8 +7,8 @@
 *.pth
 llama-*/
 models/
-adapters*/
 lora-*/
+# Adapter weight binaries are excluded by *.safetensors above; config/results are tracked
 
 # Uploaded CVs — sensitive employee data
 uploads/
