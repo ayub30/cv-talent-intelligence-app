@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 import chromadb
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db
+from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
 
 
 LLM_URL = os.getenv("LLM_URL", "")
@@ -239,7 +241,11 @@ class IngestResponse(BaseModel):
 
 
 @app.post("/ingest", response_model=IngestResponse)
-async def ingest(file: UploadFile = File(...)) -> IngestResponse:
+async def ingest(
+    file: UploadFile = File(...),
+    db: sqlite3.Connection = Depends(get_db),
+    collection: chromadb.Collection = Depends(get_collection),
+) -> IngestResponse:
     if not file.filename:
         raise HTTPException(status_code=422, detail="No file provided.")
 
@@ -255,19 +261,78 @@ async def ingest(file: UploadFile = File(...)) -> IngestResponse:
     finally:
         await file.close()
 
+    cv_text = extract_text_from_pdf(dest_path)
+    fields = parse_cv_fields(cv_text, file.filename)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    existing = db.execute(
+        "SELECT id, chroma_doc_id FROM employees WHERE LOWER(name) = LOWER(?)",
+        (fields["name"],),
+    ).fetchone()
+
+    if existing:
+        employee_id = existing["id"]
+        chroma_doc_id = existing["chroma_doc_id"]
+        db.execute(
+            """UPDATE employees
+               SET reply_company=?, location=?, seniority=?, availability_status=?,
+                   current_project_name=?, last_updated=?
+               WHERE id=?""",
+            (
+                fields["reply_company"],
+                fields["location"],
+                fields["seniority"],
+                fields["availability_status"],
+                fields["current_project_name"],
+                now,
+                employee_id,
+            ),
+        )
+        db.execute("DELETE FROM employee_skills WHERE employee_id=?", (employee_id,))
+    else:
+        employee_id = generate_employee_id()
+        chroma_doc_id = employee_id
+        db.execute(
+            """INSERT INTO employees
+               (id, name, reply_company, location, seniority, availability_status,
+                current_project_name, last_updated, chroma_doc_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                employee_id,
+                fields["name"],
+                fields["reply_company"],
+                fields["location"],
+                fields["seniority"],
+                fields["availability_status"],
+                fields["current_project_name"],
+                now,
+                chroma_doc_id,
+            ),
+        )
+
+    db.executemany(
+        "INSERT INTO employee_skills (employee_id, skill, years_experience) VALUES (?, ?, ?)",
+        [(employee_id, s["skill"], s["years_experience"]) for s in fields["skills"]],
+    )
+    db.commit()
+
+    collection.upsert(
+        ids=[chroma_doc_id],
+        documents=[cv_text or fields["name"]],
+        metadatas=[{"name": fields["name"], "reply_company": fields["reply_company"]}],
+    )
+
     return IngestResponse(
         success=True,
         filename=file.filename,
         extracted={
-            "name": "Extracted Candidate",
-            "reply_company": "Reply Group",
-            "location": "London",
-            "seniority": "senior",
-            "availability_status": "available",
-            "current_project_name": None,
-            "skills": [
-                {"skill": "Python", "years_experience": 5.0},
-                {"skill": "Azure", "years_experience": 3.0},
-            ],
+            "name": fields["name"],
+            "reply_company": fields["reply_company"],
+            "location": fields["location"],
+            "seniority": fields["seniority"],
+            "availability_status": fields["availability_status"],
+            "current_project_name": fields["current_project_name"],
+            "skills": fields["skills"],
         },
     )

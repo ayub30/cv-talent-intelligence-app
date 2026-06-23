@@ -98,3 +98,62 @@ def test_ingest_extracted_skills_have_correct_fields(test_client):
         assert "skill" in skill
         assert "years_experience" in skill
         assert isinstance(skill["years_experience"], float)
+
+
+def _cv_text_for(name: str) -> str:
+    return (
+        f"{name}\nSenior Software Engineer in London\n"
+        "Python 5 years experience. Azure 3 years. Machine Learning 2 years."
+    )
+
+
+def test_ingest_employee_appears_in_candidates(test_client, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Sarah Connor")
+    )
+
+    response = test_client.post("/ingest", files=[_pdf_file("sarah_connor.pdf")])
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    extracted_name = data["extracted"]["name"]
+
+    candidates = test_client.get("/candidates").json()
+    names = [c["name"] for c in candidates]
+    assert extracted_name in names
+
+
+def test_ingest_reupload_updates_not_duplicates(test_client, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Alice Example")
+    )
+
+    test_client.post("/ingest", files=[_pdf_file("alice.pdf")])
+    test_client.post("/ingest", files=[_pdf_file("alice.pdf")])
+
+    candidates = test_client.get("/candidates").json()
+    alice_entries = [c for c in candidates if c["name"] == "Alice Example"]
+    assert len(alice_entries) == 1
+
+
+def test_ingest_reupload_refreshes_skills(test_client, monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Bob Update")
+    )
+    test_client.post("/ingest", files=[_pdf_file("bob.pdf")])
+
+    new_cv = "Bob Update\nPrincipal Engineer\nKubernetes 6 years. Docker 5 years."
+    monkeypatch.setattr(main_module, "extract_text_from_pdf", lambda path: new_cv)
+    test_client.post("/ingest", files=[_pdf_file("bob.pdf")])
+
+    candidates = test_client.get("/candidates").json()
+    bob = next(c for c in candidates if c["name"] == "Bob Update")
+    skill_names = [s["skill"] for s in bob["skills"]]
+    assert "Kubernetes" in skill_names
+    assert "Docker" in skill_names
