@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AdjustmentsHorizontalIcon,
   ArrowDownTrayIcon,
@@ -30,8 +30,21 @@ type Page =
   | 'companies'
   | 'analytics';
 
+type ApiCandidate = {
+  id: string;
+  name: string;
+  reply_company: string;
+  location: string;
+  seniority: string;
+  availability_status: string;
+  current_project_name: string | null;
+  last_updated: string;
+  chroma_doc_id: string;
+  skills: Array<{ skill: string; years_experience: number }>;
+};
+
 type Candidate = {
-  id: number;
+  id: string;
   name: string;
   role: string;
   company: string;
@@ -65,94 +78,6 @@ const pages: Array<{ key: Page; label: string; icon: typeof UserGroupIcon }> = [
   { key: 'analytics', label: 'Analytics', icon: BeakerIcon },
 ];
 
-const candidates: Candidate[] = [
-  {
-    id: 1,
-    name: 'Maya Okafor',
-    role: 'Principal Data Engineer',
-    company: 'Northstar Digital',
-    location: 'London',
-    score: 94,
-    confidence: 91,
-    completeness: 96,
-    availability: '2 weeks',
-    clearance: 'BPSS',
-    skills: ['Azure', 'Databricks', 'Python', 'FHIR', 'Data migration', 'RAG'],
-    evidence: [
-      'Led Azure Databricks migration for 18 clinical datasets across 4 trusts.',
-      'Built retrieval pipelines for policy and patient pathway knowledge bases.',
-      'Owned data quality controls, lineage, and stakeholder reporting.',
-    ],
-    gaps: ['No explicit SC clearance recorded.'],
-  },
-  {
-    id: 2,
-    name: 'Daniel Hughes',
-    role: 'Senior Cloud Architect',
-    company: 'Atlas Advisory',
-    location: 'Manchester',
-    score: 89,
-    confidence: 87,
-    completeness: 88,
-    availability: 'Available now',
-    clearance: 'SC',
-    skills: ['Azure', 'Terraform', 'Kubernetes', 'Security architecture', 'FinOps'],
-    evidence: [
-      'Designed secure landing zones for regulated workloads.',
-      'Delivered Terraform module library used by nine delivery teams.',
-    ],
-    gaps: ['Healthcare experience is adjacent, not direct.'],
-  },
-  {
-    id: 3,
-    name: 'Aisha Rahman',
-    role: 'AI Product Lead',
-    company: 'Civitas Systems',
-    location: 'Birmingham',
-    score: 86,
-    confidence: 82,
-    completeness: 91,
-    availability: '4 weeks',
-    clearance: 'None',
-    skills: ['RAG', 'LLM evaluation', 'Governance', 'Prompt design', 'Azure AI'],
-    evidence: [
-      'Ran LLM evaluation framework across retrieval quality and hallucination risk.',
-      'Shipped clinician-facing assistant prototype with cited policy sources.',
-    ],
-    gaps: ['Needs technical pairing for platform implementation.'],
-  },
-  {
-    id: 4,
-    name: 'Elena Varga',
-    role: 'Cyber Security Consultant',
-    company: 'Fortis Risk',
-    location: 'Remote',
-    score: 82,
-    confidence: 80,
-    completeness: 93,
-    availability: 'Available now',
-    clearance: 'SC',
-    skills: ['ISO 27001', 'Risk assessment', 'NIST', 'Azure security'],
-    evidence: ['Assessed Azure security controls for sensitive health records platform.'],
-    gaps: ['Less direct experience with data engineering delivery.'],
-  },
-  {
-    id: 5,
-    name: 'Tom Spencer',
-    role: 'Programme Delivery Director',
-    company: 'Redwood Consulting',
-    location: 'Edinburgh',
-    score: 78,
-    confidence: 75,
-    completeness: 84,
-    availability: 'Allocated',
-    clearance: 'SC',
-    skills: ['Transformation', 'PMO', 'Healthcare ops', 'Data strategy'],
-    evidence: ['Recovered delayed healthcare transformation portfolio across six workstreams.'],
-    gaps: ['CV is stale and lacks recent technical delivery detail.'],
-  },
-];
-
 const companies = [
   ['Northstar Digital', 'Digital engineering', 284, 91, 268, 'London'],
   ['Atlas Advisory', 'Cloud advisory', 241, 84, 221, 'Manchester'],
@@ -171,31 +96,80 @@ const skills = [
   ['Programme recovery', 58, 74, 'Surplus'],
 ] as const;
 
+const AVAILABILITY_LABELS: Record<string, string> = {
+  available: 'Available now',
+  on_project: 'On project',
+  on_bench: 'On bench',
+  rolling_off: 'Rolling off',
+};
+
+function mapApiCandidate(api: ApiCandidate): Candidate {
+  const role = api.seniority.charAt(0).toUpperCase() + api.seniority.slice(1);
+  return {
+    id: api.id,
+    name: api.name,
+    role,
+    company: api.reply_company,
+    location: api.location,
+    score: 0,
+    confidence: 0,
+    completeness: 0,
+    availability: AVAILABILITY_LABELS[api.availability_status] ?? api.availability_status,
+    clearance: '—',
+    skills: api.skills.map((s) => s.skill),
+    evidence: [],
+    gaps: [],
+  };
+}
+
 const defaultContract =
   'Healthcare client needs a senior Azure data engineering team to migrate clinical datasets, build governed analytics, and support an AI knowledge assistant with cited retrieval.';
 
 export function App() {
   const [page, setPage] = useState<Page>('dashboard');
-  const [selectedId, setSelectedId] = useState(1);
-  const [query, setQuery] = useState('Azure healthcare RAG');
+  const [selectedId, setSelectedId] = useState<string>('');
+  const [query, setQuery] = useState('');
   const [minScore, setMinScore] = useState(75);
   const [contract, setContract] = useState(defaultContract);
-  const [shortlist, setShortlist] = useState<number[]>([1, 2, 3]);
+  const [shortlist, setShortlist] = useState<string[]>([]);
   const [askInput, setAskInput] = useState('Find the best team for this contract');
   const [aiAnswer, setAiAnswer] = useState('Ask the assistant to rank people using the backend /ask route.');
   const [aiMatches, setAiMatches] = useState<AskMatch[]>([]);
   const [isAsking, setIsAsking] = useState(false);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [isCandidatesLoading, setIsCandidatesLoading] = useState(true);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
 
-  const selected = candidates.find((candidate) => candidate.id === selectedId) ?? candidates[0];
+  useEffect(() => {
+    fetch('/candidates')
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
+        return res.json() as Promise<ApiCandidate[]>;
+      })
+      .then((data) => {
+        setCandidates(data.map(mapApiCandidate));
+        setIsCandidatesLoading(false);
+      })
+      .catch((err: unknown) => {
+        setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
+        setIsCandidatesLoading(false);
+      });
+  }, []);
+
+  const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
+
   const filteredCandidates = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return candidates.filter((candidate) => {
-      const haystack = [candidate.name, candidate.role, candidate.company, candidate.location, ...candidate.skills].join(' ').toLowerCase();
-      return candidate.score >= minScore && terms.every((term) => haystack.includes(term) || term.length < 3);
+      if (!terms.length) return true;
+      const haystack = [candidate.name, candidate.role, candidate.company, candidate.location, ...candidate.skills]
+        .join(' ')
+        .toLowerCase();
+      return terms.every((term) => haystack.includes(term) || term.length < 3);
     });
-  }, [minScore, query]);
+  }, [candidates, query]);
 
-  function toggleShortlist(id: number) {
+  function toggleShortlist(id: string) {
     setShortlist((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
@@ -272,6 +246,7 @@ export function App() {
         <section className="content">
           {page === 'dashboard' && (
             <Dashboard
+              candidates={candidates}
               setPage={setPage}
               contract={contract}
               setContract={setContract}
@@ -293,6 +268,8 @@ export function App() {
                 setSelectedId(id);
                 setPage('profile');
               }}
+              isLoading={isCandidatesLoading}
+              error={candidatesError}
             />
           )}
           {page === 'ai' && (
@@ -303,10 +280,13 @@ export function App() {
               isAsking={isAsking}
               aiAnswer={aiAnswer}
               aiMatches={aiMatches}
+              candidates={candidates}
             />
           )}
-          {page === 'profile' && <Profile candidate={selected} shortlisted={shortlist.includes(selected.id)} toggleShortlist={toggleShortlist} />}
-          {page === 'shortlist' && <Shortlist ids={shortlist} toggleShortlist={toggleShortlist} />}
+          {page === 'profile' && selected && (
+            <Profile candidate={selected} shortlisted={shortlist.includes(selected.id)} toggleShortlist={toggleShortlist} />
+          )}
+          {page === 'shortlist' && <Shortlist ids={shortlist} candidates={candidates} toggleShortlist={toggleShortlist} />}
           {page === 'ingestion' && <Ingestion />}
           {page === 'companies' && <CompanyDirectory />}
           {page === 'analytics' && <Analytics />}
@@ -317,17 +297,19 @@ export function App() {
 }
 
 function Dashboard({
+  candidates,
   setPage,
   contract,
   setContract,
   askLLM,
   setSelectedId,
 }: {
+  candidates: Candidate[];
   setPage: (page: Page) => void;
   contract: string;
   setContract: (value: string) => void;
   askLLM: (question?: string) => void;
-  setSelectedId: (id: number) => void;
+  setSelectedId: (id: string) => void;
 }) {
   return (
     <div className="stack">
@@ -359,7 +341,7 @@ function Dashboard({
                   <strong>{candidate.name}</strong>
                   <small>{candidate.role}</small>
                 </span>
-                <b>{candidate.score}%</b>
+                <b>{candidate.score > 0 ? `${candidate.score}%` : '—'}</b>
               </button>
             ))}
           </div>
@@ -403,29 +385,43 @@ function TalentSearch({
   shortlist,
   toggleShortlist,
   openProfile,
+  isLoading,
+  error,
 }: {
   query: string;
   setQuery: (value: string) => void;
   minScore: number;
   setMinScore: (value: number) => void;
   filteredCandidates: Candidate[];
-  shortlist: number[];
-  toggleShortlist: (id: number) => void;
-  openProfile: (id: number) => void;
+  shortlist: string[];
+  toggleShortlist: (id: string) => void;
+  openProfile: (id: string) => void;
+  isLoading: boolean;
+  error: string | null;
 }) {
   return (
     <div className="stack">
       <Panel title="Search controls">
         <div className="filters">
           <input value={query} onChange={(event) => setQuery(event.target.value)} />
-          <select><option>All companies</option><option>Northstar Digital</option><option>Atlas Advisory</option></select>
-          <select><option>Any availability</option><option>Available now</option><option>2 weeks</option></select>
+          <select><option>All companies</option><option>Data Reply</option><option>Cluster Reply</option></select>
+          <select><option>Any availability</option><option>Available now</option><option>Rolling off</option></select>
           <label>Minimum match {minScore}%<input type="range" min={50} max={95} value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} /></label>
         </div>
       </Panel>
-      <Panel title={`${filteredCandidates.length} talent results`} action={<button><AdjustmentsHorizontalIcon /> Columns</button>}>
-        <CandidateTable candidates={filteredCandidates} shortlist={shortlist} toggleShortlist={toggleShortlist} openProfile={openProfile} />
-      </Panel>
+      {isLoading ? (
+        <Panel title="Loading candidates…">
+          <p className="body-copy">Fetching talent data from the server…</p>
+        </Panel>
+      ) : error ? (
+        <Panel title="Could not load candidates">
+          <Warning>{error}</Warning>
+        </Panel>
+      ) : (
+        <Panel title={`${filteredCandidates.length} talent results`} action={<button><AdjustmentsHorizontalIcon /> Columns</button>}>
+          <CandidateTable candidates={filteredCandidates} shortlist={shortlist} toggleShortlist={toggleShortlist} openProfile={openProfile} />
+        </Panel>
+      )}
     </div>
   );
 }
@@ -437,6 +433,7 @@ function AIWorkspace({
   isAsking,
   aiAnswer,
   aiMatches,
+  candidates,
 }: {
   askInput: string;
   setAskInput: (value: string) => void;
@@ -444,6 +441,7 @@ function AIWorkspace({
   isAsking: boolean;
   aiAnswer: string;
   aiMatches: AskMatch[];
+  candidates: Candidate[];
 }) {
   return (
     <div className="two-col wide-left">
@@ -464,13 +462,13 @@ function AIWorkspace({
         <div className="mini-list">
           {(aiMatches.length
             ? aiMatches
-            : candidates.slice(0, 3).map<AskMatch>((c) => ({ name: c.name, role: c.role, score: c.score, evidence: c.evidence[0] }))
+            : candidates.slice(0, 3).map<AskMatch>((c) => ({ name: c.name, role: c.role, score: c.score || undefined, evidence: c.evidence[0] }))
           ).map((match) => (
             <div key={match.name} className="match-card">
               <strong>{match.name}</strong>
               <small>{match.role}</small>
               <p>{match.evidence ?? 'Strong CV evidence for this requirement.'}</p>
-              <b>{match.score ?? 90}%</b>
+              <b>{match.score != null ? `${match.score}%` : '—'}</b>
             </div>
           ))}
         </div>
@@ -479,7 +477,7 @@ function AIWorkspace({
   );
 }
 
-function Profile({ candidate, shortlisted, toggleShortlist }: { candidate: Candidate; shortlisted: boolean; toggleShortlist: (id: number) => void }) {
+function Profile({ candidate, shortlisted, toggleShortlist }: { candidate: Candidate; shortlisted: boolean; toggleShortlist: (id: string) => void }) {
   const [tab, setTab] = useState('Overview');
   return (
     <div className="two-col">
@@ -494,32 +492,36 @@ function Profile({ candidate, shortlisted, toggleShortlist }: { candidate: Candi
       </Panel>
       <Panel title="Profile detail">
         <div className="tabs">{['Overview', 'CV evidence', 'Gaps'].map((item) => <button key={item} className={tab === item ? 'active-tab' : ''} onClick={() => setTab(item)}>{item}</button>)}</div>
-        {tab === 'Overview' && <p className="body-copy">Best role: technical lead for data platform and retrieval pipeline implementation.</p>}
-        {tab === 'CV evidence' && candidate.evidence.map((item) => <Evidence key={item}>{item}</Evidence>)}
-        {tab === 'Gaps' && candidate.gaps.map((item) => <Warning key={item}>{item}</Warning>)}
+        {tab === 'Overview' && <p className="body-copy">Profile available — full CV evidence coming in a future update.</p>}
+        {tab === 'CV evidence' && (candidate.evidence.length ? candidate.evidence.map((item) => <Evidence key={item}>{item}</Evidence>) : <p className="body-copy">No CV evidence indexed yet.</p>)}
+        {tab === 'Gaps' && (candidate.gaps.length ? candidate.gaps.map((item) => <Warning key={item}>{item}</Warning>) : <p className="body-copy">No gaps recorded.</p>)}
       </Panel>
     </div>
   );
 }
 
-function Shortlist({ ids, toggleShortlist }: { ids: number[]; toggleShortlist: (id: number) => void }) {
+function Shortlist({ ids, candidates, toggleShortlist }: { ids: string[]; candidates: Candidate[]; toggleShortlist: (id: string) => void }) {
   const [exported, setExported] = useState(false);
   const shortlisted = candidates.filter((candidate) => ids.includes(candidate.id));
   return (
     <div className="stack">
       <Panel title="Shortlist builder" action={<button onClick={() => setExported(true)}><ArrowDownTrayIcon /> Export pack</button>}>
         {exported && <Evidence>Proposal pack queued: CV summaries, AI evidence, gaps, and approval notes.</Evidence>}
-        <div className="shortlist-grid">
-          {shortlisted.map((candidate) => (
-            <div className="shortlist-card" key={candidate.id}>
-              <button className="remove" onClick={() => toggleShortlist(candidate.id)}>Remove</button>
-              <strong>{candidate.name}</strong>
-              <small>{candidate.role}</small>
-              <Score label="Match" value={candidate.score} />
-              <textarea placeholder="Proposal rationale" defaultValue={candidate.id === 1 ? 'Best technical lead for delivery.' : ''} />
-            </div>
-          ))}
-        </div>
+        {shortlisted.length === 0 ? (
+          <p className="body-copy">No candidates shortlisted yet. Add candidates from the Talent Search page.</p>
+        ) : (
+          <div className="shortlist-grid">
+            {shortlisted.map((candidate) => (
+              <div className="shortlist-card" key={candidate.id}>
+                <button className="remove" onClick={() => toggleShortlist(candidate.id)}>Remove</button>
+                <strong>{candidate.name}</strong>
+                <small>{candidate.role}</small>
+                <Score label="Match" value={candidate.score} />
+                <textarea placeholder="Proposal rationale" />
+              </div>
+            ))}
+          </div>
+        )}
       </Panel>
     </div>
   );
@@ -595,7 +597,10 @@ function Analytics() {
   );
 }
 
-function CandidateTable({ candidates: rows, shortlist, toggleShortlist, openProfile }: { candidates: Candidate[]; shortlist: number[]; toggleShortlist: (id: number) => void; openProfile: (id: number) => void }) {
+function CandidateTable({ candidates: rows, shortlist, toggleShortlist, openProfile }: { candidates: Candidate[]; shortlist: string[]; toggleShortlist: (id: string) => void; openProfile: (id: string) => void }) {
+  if (rows.length === 0) {
+    return <p className="body-copy">No candidates match the current search. Try adjusting your query.</p>;
+  }
   return (
     <div className="candidate-table">
       {rows.map((candidate) => (
@@ -662,7 +667,7 @@ function Field({ label, value }: { label: string; value: string }) {
 function Score({ label, value }: { label: string; value: number }) {
   return (
     <div className="score">
-      <div><span>{label}</span><strong>{value}%</strong></div>
+      <div><span>{label}</span><strong>{value > 0 ? `${value}%` : '—'}</strong></div>
       <Bar value={value} tone={value >= 90 ? 'green' : value >= 80 ? 'cyan' : 'amber'} />
     </div>
   );
