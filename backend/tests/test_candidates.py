@@ -1,0 +1,78 @@
+import sqlite3
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.chroma_store import init_collection, make_ephemeral_client, seed_collection
+from app.database import init_db, seed_db
+from app.main import app, get_collection, get_db
+
+
+@pytest.fixture()
+def test_client():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    init_db(conn)
+    seed_db(conn)
+
+    chroma_client = make_ephemeral_client()
+    collection = init_collection(chroma_client)
+    seed_collection(collection)
+
+    app.dependency_overrides[get_db] = lambda: conn
+    app.dependency_overrides[get_collection] = lambda: collection
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+    conn.close()
+
+
+def test_candidates_returns_all_seeded_employees(test_client):
+    response = test_client.get("/candidates")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 10
+
+
+def test_candidates_response_shape(test_client):
+    response = test_client.get("/candidates")
+    assert response.status_code == 200
+    candidate = response.json()[0]
+    assert "id" in candidate
+    assert "name" in candidate
+    assert "reply_company" in candidate
+    assert "location" in candidate
+    assert "seniority" in candidate
+    assert "availability_status" in candidate
+    assert "last_updated" in candidate
+    assert "chroma_doc_id" in candidate
+    assert "skills" in candidate
+    assert isinstance(candidate["skills"], list)
+
+
+def test_candidates_skills_have_correct_fields(test_client):
+    response = test_client.get("/candidates")
+    assert response.status_code == 200
+    candidates_with_skills = [c for c in response.json() if c["skills"]]
+    assert len(candidates_with_skills) == 10
+    skill = candidates_with_skills[0]["skills"][0]
+    assert "skill" in skill
+    assert "years_experience" in skill
+    assert isinstance(skill["years_experience"], float)
+
+
+def test_candidates_seniority_values_are_valid(test_client):
+    valid_seniority = {"junior", "mid", "senior", "principal"}
+    response = test_client.get("/candidates")
+    for candidate in response.json():
+        assert candidate["seniority"] in valid_seniority
+
+
+def test_candidates_availability_values_are_valid(test_client):
+    valid_status = {"available", "on_project", "on_bench", "rolling_off"}
+    response = test_client.get("/candidates")
+    for candidate in response.json():
+        assert candidate["availability_status"] in valid_status

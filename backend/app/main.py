@@ -1,15 +1,41 @@
 import os
+import sqlite3
+from contextlib import asynccontextmanager
 from typing import Any
 
+import chromadb
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .chroma_store import init_collection, make_chroma_client, seed_collection
+from .database import init_db, make_connection, seed_db
+
 
 LLM_URL = os.getenv("LLM_URL", "")
+DB_PATH = os.getenv("DB_PATH", "talent.db")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "./chromadb")
 
-app = FastAPI(title="CV Talent Intelligence API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    conn = make_connection(DB_PATH)
+    init_db(conn)
+    seed_db(conn)
+    app.state.db_conn = conn
+
+    chroma_client = make_chroma_client(CHROMA_PATH)
+    collection = init_collection(chroma_client)
+    seed_collection(collection)
+    app.state.chroma_collection = collection
+
+    yield
+
+    conn.close()
+
+
+app = FastAPI(title="CV Talent Intelligence API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,6 +44,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def get_db() -> sqlite3.Connection:
+    return app.state.db_conn
+
+
+def get_collection() -> chromadb.Collection:
+    return app.state.chroma_collection
 
 
 class AskRequest(BaseModel):
@@ -32,9 +66,61 @@ class AskResponse(BaseModel):
     source: str
 
 
+class SkillOut(BaseModel):
+    skill: str
+    years_experience: float
+
+
+class CandidateOut(BaseModel):
+    id: str
+    name: str
+    reply_company: str
+    location: str
+    seniority: str
+    availability_status: str
+    current_project_name: str | None
+    last_updated: str
+    chroma_doc_id: str
+    skills: list[SkillOut]
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/candidates", response_model=list[CandidateOut])
+def get_candidates(db: sqlite3.Connection = Depends(get_db)) -> list[CandidateOut]:
+    rows = db.execute(
+        "SELECT id, name, reply_company, location, seniority, availability_status, "
+        "current_project_name, last_updated, chroma_doc_id FROM employees ORDER BY name"
+    ).fetchall()
+
+    skill_rows = db.execute(
+        "SELECT employee_id, skill, years_experience FROM employee_skills"
+    ).fetchall()
+
+    skills_by_employee: dict[str, list[SkillOut]] = {}
+    for sr in skill_rows:
+        skills_by_employee.setdefault(sr["employee_id"], []).append(
+            SkillOut(skill=sr["skill"], years_experience=sr["years_experience"])
+        )
+
+    return [
+        CandidateOut(
+            id=row["id"],
+            name=row["name"],
+            reply_company=row["reply_company"],
+            location=row["location"],
+            seniority=row["seniority"],
+            availability_status=row["availability_status"],
+            current_project_name=row["current_project_name"],
+            last_updated=row["last_updated"],
+            chroma_doc_id=row["chroma_doc_id"],
+            skills=skills_by_employee.get(row["id"], []),
+        )
+        for row in rows
+    ]
 
 
 @app.post("/ask", response_model=AskResponse)
