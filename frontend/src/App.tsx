@@ -1183,20 +1183,46 @@ type IngestResult = {
   extracted: IngestExtracted;
 };
 
+type IngestStatusRow = {
+  company: string;
+  total: number;
+  indexed: number;
+  failed: number;
+  stale: number;
+  status: string;
+};
+
 function Ingestion({ onUploadSuccess }: { onUploadSuccess: () => void }) {
   const [issuesOnly, setIssuesOnly] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<IngestResult | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [statusRows, setStatusRows] = useState<IngestStatusRow[]>([]);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
-  const rows = [
-    ['Northstar Digital CV folder', 284, 268, 4, 12, 'Healthy'],
-    ['Atlas Advisory HRIS export', 241, 221, 7, 13, 'Review'],
-    ['Redwood Consulting SharePoint', 302, 244, 18, 40, 'At risk'],
-    ['Fortis Risk CV pack', 138, 132, 1, 5, 'Healthy'],
-  ];
-  const visible = issuesOnly ? rows.filter((row) => Number(row[3]) > 3 || Number(row[4]) > 12) : rows;
+  async function fetchStatus() {
+    setStatusLoading(true);
+    setStatusError(null);
+    try {
+      const res = await fetch('/ingest/status');
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const data = await res.json() as IngestStatusRow[];
+      setStatusRows(data);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load ingestion status.');
+    } finally {
+      setStatusLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fetchStatus();
+  }, []);
+
+  const tableRows = statusRows.map((r) => [r.company, r.total, r.indexed, r.failed, r.stale, r.status]);
+  const visible = issuesOnly ? tableRows.filter((row) => Number(row[3]) > 3 || Number(row[4]) > 12) : tableRows;
 
   async function handleUpload() {
     if (!selectedFile) return;
@@ -1214,6 +1240,7 @@ function Ingestion({ onUploadSuccess }: { onUploadSuccess: () => void }) {
       const data = await response.json() as IngestResult;
       setUploadResult(data);
       onUploadSuccess();
+      fetchStatus();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
@@ -1266,7 +1293,9 @@ function Ingestion({ onUploadSuccess }: { onUploadSuccess: () => void }) {
         {uploadError && <Warning>{uploadError}</Warning>}
       </Panel>
       <Panel title="CV ingestion health" action={<label className="inline-check"><input type="checkbox" checked={issuesOnly} onChange={(event) => setIssuesOnly(event.target.checked)} /> Issues only</label>}>
-        <DataTable headers={['Source', 'Total', 'Indexed', 'Failed', 'Stale', 'Status']} rows={visible} />
+        {statusLoading && <Evidence>Loading ingestion status…</Evidence>}
+        {statusError && <Warning>{statusError}</Warning>}
+        {!statusLoading && !statusError && <DataTable headers={['Source', 'Total', 'Indexed', 'Failed', 'Stale', 'Status']} rows={visible} />}
       </Panel>
     </div>
   );

@@ -794,3 +794,68 @@ async def ingest(
             "skills": fields["skills"],
         },
     )
+
+
+class IngestStatusRow(BaseModel):
+    company: str
+    total: int
+    indexed: int
+    failed: int
+    stale: int
+    status: str
+
+
+def _ingest_status_label(failed: int, total: int, stale: int) -> str:
+    if total == 0:
+        return "Healthy"
+    failed_pct = failed / total
+    stale_pct = stale / total
+    if failed_pct >= 0.05 or stale_pct >= 0.10:
+        return "At risk"
+    if failed_pct >= 0.02 or stale_pct >= 0.05:
+        return "Review"
+    return "Healthy"
+
+
+@app.get("/ingest/status", response_model=list[IngestStatusRow])
+async def ingest_status(
+    db: sqlite3.Connection = Depends(get_db),
+    collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
+) -> list[IngestStatusRow]:
+    employees = db.execute(
+        "SELECT reply_company, last_updated, chroma_doc_id FROM employees ORDER BY reply_company"
+    ).fetchall()
+
+    all_chroma_ids = [e["chroma_doc_id"] for e in employees]
+    if all_chroma_ids:
+        chroma_result = collection.get(ids=all_chroma_ids, include=["documents"])
+        indexed_ids = {
+            id_
+            for id_, doc in zip(chroma_result["ids"], chroma_result["documents"])
+            if doc
+        }
+    else:
+        indexed_ids: set[str] = set()
+
+    from collections import defaultdict
+    companies: dict[str, list] = defaultdict(list)
+    for e in employees:
+        companies[e["reply_company"]].append(e)
+
+    result = []
+    for company, members in sorted(companies.items()):
+        total = len(members)
+        indexed = sum(1 for e in members if e["chroma_doc_id"] in indexed_ids)
+        failed = total - indexed
+        stale = sum(1 for e in members if _is_stale(e["last_updated"]))
+        result.append(IngestStatusRow(
+            company=company,
+            total=total,
+            indexed=indexed,
+            failed=failed,
+            stale=stale,
+            status=_ingest_status_label(failed, total, stale),
+        ))
+
+    return result
