@@ -495,6 +495,29 @@ def patch_profile(
     return get_profile(employee_id, db, collection)
 
 
+class SearchResultOut(BaseModel):
+    employee_id: str
+    name: str
+    score: int
+
+
+@app.get("/search", response_model=list[SearchResultOut])
+def search(
+    q: str = Query(min_length=1),
+    n: int = Query(default=10, ge=1, le=50),
+    collection: chromadb.Collection = Depends(get_collection),
+    _auth: str = Depends(require_auth),
+) -> list[SearchResultOut]:
+    try:
+        results = search_cvs(collection, q, n_results=n)
+    except Exception:
+        results = []
+    return [
+        SearchResultOut(employee_id=r["employee_id"], name=r["name"], score=r["score"])
+        for r in results
+    ]
+
+
 class SkillAnalyticsOut(BaseModel):
     skill: str
     supply_pct: float
