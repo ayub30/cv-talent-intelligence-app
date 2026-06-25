@@ -594,6 +594,13 @@ function LoginPage({
   );
 }
 
+type ApiStats = {
+  employee_count: number;
+  completeness_pct: number;
+  stale_count: number;
+  indexed_count: number;
+};
+
 function Dashboard({
   candidates,
   setPage,
@@ -609,11 +616,32 @@ function Dashboard({
   askLLM: (question?: string) => void;
   setSelectedId: (id: string) => void;
 }) {
+  const [stats, setStats] = useState<ApiStats | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/stats')
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load stats: ${res.status}`);
+        return res.json() as Promise<ApiStats>;
+      })
+      .then((data) => setStats(data))
+      .catch((err: unknown) => {
+        setStatsError(err instanceof Error ? err.message : 'Failed to load stats.');
+      });
+  }, []);
+
+  const employeeValue = stats ? String(stats.employee_count) : '—';
+  const completenessValue = stats ? `${stats.completeness_pct}%` : '—';
+  const staleDetail = stats ? `${stats.stale_count} stale profiles` : '—';
+  const indexedDetail = stats ? `${stats.indexed_count} indexed` : '—';
+
   return (
     <div className="stack">
+      {statsError && <Warning>{statsError}</Warning>}
       <div className="metric-grid">
-        <Metric icon={UserGroupIcon} label="Indexed employees" value="8,420" detail="+312 this month" />
-        <Metric icon={CircleStackIcon} label="CV completeness" value="86%" detail="1,148 need review" />
+        <Metric icon={UserGroupIcon} label="Indexed employees" value={employeeValue} detail={indexedDetail} />
+        <Metric icon={CircleStackIcon} label="CV completeness" value={completenessValue} detail={staleDetail} />
         <Metric icon={ClipboardDocumentCheckIcon} label="Open contract matches" value="27" detail="8 high priority" />
         <Metric icon={ChatBubbleLeftRightIcon} label="RAG health" value="94%" detail="42 failed parses" />
       </div>
@@ -1477,17 +1505,41 @@ function CandidateTable({ candidates: rows, shortlist, toggleShortlist, openProf
 }
 
 function CompanyCards() {
+  const [apiCompanies, setApiCompanies] = useState<ApiCompany[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/companies')
+      .then((res) => {
+        if (!res.ok) throw new Error(`Failed to load companies: ${res.status}`);
+        return res.json() as Promise<ApiCompany[]>;
+      })
+      .then((data) => {
+        setApiCompanies(data);
+        setIsLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Failed to load companies.');
+        setIsLoading(false);
+      });
+  }, []);
+
   return (
     <Panel title="Company coverage">
-      <div className="company-grid">
-        {companies.slice(0, 5).map((company) => (
-          <div className="company-card" key={company[0]}>
-            <strong>{company[0]}</strong>
-            <small>{company[2]} employees</small>
-            <Score label="Complete" value={company[3]} />
-          </div>
-        ))}
-      </div>
+      {isLoading && <p className="body-copy">Loading company data…</p>}
+      {error && <Warning>{error}</Warning>}
+      {!isLoading && !error && (
+        <div className="company-grid">
+          {apiCompanies.slice(0, 5).map((company) => (
+            <div className="company-card" key={company.name}>
+              <strong>{company.name}</strong>
+              <small>{company.employee_count} employees</small>
+              <Score label="Complete" value={company.completeness_score} />
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }

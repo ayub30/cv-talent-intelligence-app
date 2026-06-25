@@ -683,6 +683,44 @@ def get_companies(
     ]
 
 
+class StatsOut(BaseModel):
+    employee_count: int
+    completeness_pct: float
+    stale_count: int
+    indexed_count: int
+
+
+@app.get("/stats", response_model=StatsOut)
+def get_stats(
+    db: sqlite3.Connection = Depends(get_db),
+    _auth: str = Depends(require_auth),
+) -> StatsOut:
+    row = db.execute(
+        """
+        SELECT
+            COUNT(e.id) AS employee_count,
+            ROUND(
+                100.0 * SUM(CASE WHEN esc.skill_count >= 3 THEN 1 ELSE 0 END) / COUNT(e.id)
+            ) AS completeness_pct,
+            SUM(CASE WHEN e.last_updated < date('now', '-6 months') THEN 1 ELSE 0 END) AS stale_count,
+            COUNT(DISTINCT e.chroma_doc_id) AS indexed_count
+        FROM employees e
+        LEFT JOIN (
+            SELECT employee_id, COUNT(*) AS skill_count
+            FROM employee_skills
+            GROUP BY employee_id
+        ) esc ON e.id = esc.employee_id
+        """
+    ).fetchone()
+
+    return StatsOut(
+        employee_count=row["employee_count"] or 0,
+        completeness_pct=row["completeness_pct"] or 0.0,
+        stale_count=row["stale_count"] or 0,
+        indexed_count=row["indexed_count"] or 0,
+    )
+
+
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", tempfile.gettempdir() + "/talent_uploads")
 
 
