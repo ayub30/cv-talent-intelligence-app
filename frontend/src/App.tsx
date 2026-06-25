@@ -59,6 +59,7 @@ type Candidate = {
   skills: string[];
   evidence: string[];
   gaps: string[];
+  last_updated: string;
 };
 
 type AskMatch = {
@@ -120,6 +121,14 @@ const AVAILABILITY_LABELS: Record<string, string> = {
   rolling_off: 'Rolling off',
 };
 
+const STALE_MONTHS = 6;
+
+function isCandidateStale(last_updated: string): boolean {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - STALE_MONTHS);
+  return new Date(last_updated) < cutoff;
+}
+
 function mapApiCandidate(api: ApiCandidate): Candidate {
   const role = api.seniority.charAt(0).toUpperCase() + api.seniority.slice(1);
   return {
@@ -138,6 +147,7 @@ function mapApiCandidate(api: ApiCandidate): Candidate {
     skills: api.skills.map((s) => s.skill),
     evidence: [],
     gaps: [],
+    last_updated: api.last_updated,
   };
 }
 
@@ -1295,7 +1305,7 @@ function CandidateTable({ candidates: rows, shortlist, toggleShortlist, openProf
       {rows.map((candidate) => (
         <div className="candidate-row" key={candidate.id}>
           <button className="candidate-main" onClick={() => openProfile(candidate.id)}>
-            <strong>{candidate.name}</strong>
+            <strong>{candidate.name}{isCandidateStale(candidate.last_updated) && <span className="stale-badge">Stale</span>}</strong>
             <small>{candidate.role} - {candidate.company}</small>
           </button>
           <div className="pills">{candidate.skills.slice(0, 4).map((skill) => <Pill key={skill}>{skill}</Pill>)}</div>
