@@ -36,13 +36,24 @@ def test_candidates_returns_all_seeded_employees(test_client):
     response = test_client.get("/candidates")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 10
+    assert data["total"] == 10
+    assert len(data["items"]) == 10
+
+
+def test_candidates_response_has_total_and_items(test_client):
+    response = test_client.get("/candidates")
+    assert response.status_code == 200
+    data = response.json()
+    assert "total" in data
+    assert "items" in data
+    assert isinstance(data["total"], int)
+    assert isinstance(data["items"], list)
 
 
 def test_candidates_response_shape(test_client):
     response = test_client.get("/candidates")
     assert response.status_code == 200
-    candidate = response.json()[0]
+    candidate = response.json()["items"][0]
     assert "id" in candidate
     assert "name" in candidate
     assert "reply_company" in candidate
@@ -58,7 +69,7 @@ def test_candidates_response_shape(test_client):
 def test_candidates_skills_have_correct_fields(test_client):
     response = test_client.get("/candidates")
     assert response.status_code == 200
-    candidates_with_skills = [c for c in response.json() if c["skills"]]
+    candidates_with_skills = [c for c in response.json()["items"] if c["skills"]]
     assert len(candidates_with_skills) == 10
     skill = candidates_with_skills[0]["skills"][0]
     assert "skill" in skill
@@ -69,14 +80,14 @@ def test_candidates_skills_have_correct_fields(test_client):
 def test_candidates_seniority_values_are_valid(test_client):
     valid_seniority = {"junior", "mid", "senior", "principal"}
     response = test_client.get("/candidates")
-    for candidate in response.json():
+    for candidate in response.json()["items"]:
         assert candidate["seniority"] in valid_seniority
 
 
 def test_candidates_availability_values_are_valid(test_client):
     valid_status = {"available", "on_project", "on_bench", "rolling_off"}
     response = test_client.get("/candidates")
-    for candidate in response.json():
+    for candidate in response.json()["items"]:
         assert candidate["availability_status"] in valid_status
 
 
@@ -84,33 +95,36 @@ def test_filter_by_seniority(test_client):
     response = test_client.get("/candidates?seniority=junior")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Tom Bradley"
-    assert all(c["seniority"] == "junior" for c in data)
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["name"] == "Tom Bradley"
+    assert all(c["seniority"] == "junior" for c in data["items"])
 
 
 def test_filter_by_availability(test_client):
     response = test_client.get("/candidates?availability=available")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 3
-    assert all(c["availability_status"] == "available" for c in data)
+    assert data["total"] == 3
+    assert len(data["items"]) == 3
+    assert all(c["availability_status"] == "available" for c in data["items"])
 
 
 def test_filter_by_company(test_client):
     response = test_client.get("/candidates?company=Data Reply")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 2
-    assert all(c["reply_company"] == "Data Reply" for c in data)
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    assert all(c["reply_company"] == "Data Reply" for c in data["items"])
 
 
 def test_filter_by_location(test_client):
     response = test_client.get("/candidates?location=London")
     assert response.status_code == 200
     data = response.json()
-    assert all(c["location"] == "London" for c in data)
-    names = {c["name"] for c in data}
+    assert all(c["location"] == "London" for c in data["items"])
+    names = {c["name"] for c in data["items"]}
     assert "Maya Okafor" in names
     assert "Aisha Rahman" in names
 
@@ -119,8 +133,9 @@ def test_filter_by_skill_and_min_years(test_client):
     response = test_client.get("/candidates?skill=Python&min_years=5")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 3
-    names = {c["name"] for c in data}
+    assert data["total"] == 3
+    assert len(data["items"]) == 3
+    names = {c["name"] for c in data["items"]}
     assert "Maya Okafor" in names
     assert "James Carter" in names
     assert "Priya Nair" in names
@@ -130,25 +145,72 @@ def test_filter_by_skill_without_min_years(test_client):
     response = test_client.get("/candidates?skill=RAG")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Aisha Rahman"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["name"] == "Aisha Rahman"
 
 
 def test_filter_combination_company_and_seniority(test_client):
     response = test_client.get("/candidates?company=Data Reply&seniority=senior")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "James Carter"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["name"] == "James Carter"
 
 
-def test_filter_returns_empty_list_when_no_match(test_client):
+def test_filter_returns_empty_when_no_match(test_client):
     response = test_client.get("/candidates?seniority=junior&company=Data Reply")
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+    assert data["total"] == 0
+    assert data["items"] == []
 
 
 def test_no_filters_returns_all(test_client):
     response = test_client.get("/candidates")
     assert response.status_code == 200
-    assert len(response.json()) == 10
+    data = response.json()
+    assert data["total"] == 10
+    assert len(data["items"]) == 10
+
+
+def test_pagination_limit(test_client):
+    response = test_client.get("/candidates?page=1&limit=5")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 10
+    assert len(data["items"]) == 5
+
+
+def test_pagination_page_2(test_client):
+    response = test_client.get("/candidates?page=2&limit=5")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 10
+    assert len(data["items"]) == 5
+
+
+def test_pagination_no_overlap(test_client):
+    page1 = test_client.get("/candidates?page=1&limit=5").json()["items"]
+    page2 = test_client.get("/candidates?page=2&limit=5").json()["items"]
+    ids1 = {c["id"] for c in page1}
+    ids2 = {c["id"] for c in page2}
+    assert ids1.isdisjoint(ids2)
+
+
+def test_pagination_page_beyond_total(test_client):
+    response = test_client.get("/candidates?page=100&limit=50")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 10
+    assert data["items"] == []
+
+
+def test_filter_combination_skill_and_location(test_client):
+    response = test_client.get("/candidates?skill=Python&location=London")
+    assert response.status_code == 200
+    data = response.json()
+    assert "total" in data
+    assert "items" in data
+    assert all(c["location"] == "London" for c in data["items"])

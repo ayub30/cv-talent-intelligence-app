@@ -176,38 +176,25 @@ export function App() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [isAsking, setIsAsking] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [totalCandidates, setTotalCandidates] = useState(0);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const [candidatesRefreshKey, setCandidatesRefreshKey] = useState(0);
   const [isCandidatesLoading, setIsCandidatesLoading] = useState(true);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [filterCompany, setFilterCompany] = useState('');
   const [filterAvailability, setFilterAvailability] = useState('');
   const [filterSeniority, setFilterSeniority] = useState('');
+  const [filterSkill, setFilterSkill] = useState('');
+  const [filterMinYears, setFilterMinYears] = useState('');
+  const [filterLocation, setFilterLocation] = useState('');
   const [profileApiData, setProfileApiData] = useState<ApiProfile | null>(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileRefreshKey, setProfileRefreshKey] = useState(0);
 
   function refreshCandidates() {
-    setIsCandidatesLoading(true);
-    fetch('/candidates')
-      .then((res) => {
-        if (res.status === 401) {
-          setIsAuthenticated(false);
-          setIsCandidatesLoading(false);
-          return null;
-        }
-        if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
-        setIsAuthenticated(true);
-        return res.json() as Promise<ApiCandidate[]>;
-      })
-      .then((data) => {
-        if (!data) return;
-        setCandidates(data.map(mapApiCandidate));
-        setIsCandidatesLoading(false);
-      })
-      .catch((err: unknown) => {
-        setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
-        setIsCandidatesLoading(false);
-      });
+    setCandidatePage(1);
+    setCandidatesRefreshKey((k) => k + 1);
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -263,10 +250,71 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
+  // Initial mount fetch — determines auth state and loads first page
   useEffect(() => {
-    refreshCandidates();
+    setIsCandidatesLoading(true);
+    fetch('/candidates?page=1&limit=50')
+      .then((res) => {
+        if (res.status === 401) {
+          setIsAuthenticated(false);
+          setIsCandidatesLoading(false);
+          return null;
+        }
+        if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
+        setIsAuthenticated(true);
+        return res.json() as Promise<{ total: number; items: ApiCandidate[] }>;
+      })
+      .then((data) => {
+        if (!data) return;
+        setCandidates(data.items.map(mapApiCandidate));
+        setTotalCandidates(data.total);
+        setIsCandidatesLoading(false);
+      })
+      .catch((err: unknown) => {
+        setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
+        setIsCandidatesLoading(false);
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch when filters, page, or refresh key change (only after auth established)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const params = new URLSearchParams({ page: String(candidatePage), limit: '50' });
+    if (filterSkill) params.set('skill', filterSkill);
+    if (filterMinYears) params.set('min_years', filterMinYears);
+    if (filterCompany) params.set('company', filterCompany);
+    if (filterAvailability) params.set('availability', filterAvailability);
+    if (filterSeniority) params.set('seniority', filterSeniority);
+    if (filterLocation) params.set('location', filterLocation);
+
+    let cancelled = false;
+    setIsCandidatesLoading(true);
+    setCandidatesError(null);
+    fetch(`/candidates?${params.toString()}`)
+      .then((res) => {
+        if (res.status === 401) {
+          if (!cancelled) { setIsAuthenticated(false); setIsCandidatesLoading(false); }
+          return null;
+        }
+        if (!res.ok) throw new Error(`Failed to load candidates: ${res.status}`);
+        return res.json() as Promise<{ total: number; items: ApiCandidate[] }>;
+      })
+      .then((data) => {
+        if (cancelled || !data) return;
+        setCandidates(data.items.map(mapApiCandidate));
+        setTotalCandidates(data.total);
+        setIsCandidatesLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setCandidatesError(err instanceof Error ? err.message : 'Failed to load candidates.');
+          setIsCandidatesLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSkill, filterMinYears, filterCompany, filterAvailability, filterSeniority, filterLocation, candidatePage, candidatesRefreshKey]);
 
   const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
 
@@ -294,20 +342,18 @@ export function App() {
   }, [selected?.id, profileRefreshKey]);
 
   const uniqueCompanies = useMemo(() => [...new Set(candidates.map((c) => c.company))].sort(), [candidates]);
+  const uniqueLocations = useMemo(() => [...new Set(candidates.map((c) => c.location).filter(Boolean))].sort(), [candidates]);
 
   const filteredCandidates = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return candidates;
     return candidates.filter((candidate) => {
-      if (filterCompany && candidate.company !== filterCompany) return false;
-      if (filterAvailability && candidate.availabilityStatus !== filterAvailability) return false;
-      if (filterSeniority && candidate.seniority !== filterSeniority) return false;
-      if (!terms.length) return true;
       const haystack = [candidate.name, candidate.role, candidate.company, candidate.location, ...candidate.skills]
         .join(' ')
         .toLowerCase();
       return terms.every((term) => haystack.includes(term) || term.length < 3);
     });
-  }, [candidates, query, filterCompany, filterAvailability, filterSeniority]);
+  }, [candidates, query]);
 
   function toggleShortlist(id: string) {
     setShortlist((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
@@ -422,6 +468,9 @@ export function App() {
               minScore={minScore}
               setMinScore={setMinScore}
               filteredCandidates={filteredCandidates}
+              totalCandidates={totalCandidates}
+              candidatePage={candidatePage}
+              setCandidatePage={(p) => setCandidatePage(p)}
               shortlist={shortlist}
               toggleShortlist={toggleShortlist}
               openProfile={(id) => {
@@ -431,12 +480,19 @@ export function App() {
               isLoading={isCandidatesLoading}
               error={candidatesError}
               uniqueCompanies={uniqueCompanies}
+              uniqueLocations={uniqueLocations}
               filterCompany={filterCompany}
-              setFilterCompany={setFilterCompany}
+              setFilterCompany={(v) => { setFilterCompany(v); setCandidatePage(1); }}
               filterAvailability={filterAvailability}
-              setFilterAvailability={setFilterAvailability}
+              setFilterAvailability={(v) => { setFilterAvailability(v); setCandidatePage(1); }}
               filterSeniority={filterSeniority}
-              setFilterSeniority={setFilterSeniority}
+              setFilterSeniority={(v) => { setFilterSeniority(v); setCandidatePage(1); }}
+              filterSkill={filterSkill}
+              setFilterSkill={(v) => { setFilterSkill(v); setCandidatePage(1); }}
+              filterMinYears={filterMinYears}
+              setFilterMinYears={(v) => { setFilterMinYears(v); setCandidatePage(1); }}
+              filterLocation={filterLocation}
+              setFilterLocation={(v) => { setFilterLocation(v); setCandidatePage(1); }}
             />
           )}
           {page === 'ai' && (
@@ -624,42 +680,78 @@ function TalentSearch({
   minScore,
   setMinScore,
   filteredCandidates,
+  totalCandidates,
+  candidatePage,
+  setCandidatePage,
   shortlist,
   toggleShortlist,
   openProfile,
   isLoading,
   error,
   uniqueCompanies,
+  uniqueLocations,
   filterCompany,
   setFilterCompany,
   filterAvailability,
   setFilterAvailability,
   filterSeniority,
   setFilterSeniority,
+  filterSkill,
+  setFilterSkill,
+  filterMinYears,
+  setFilterMinYears,
+  filterLocation,
+  setFilterLocation,
 }: {
   query: string;
   setQuery: (value: string) => void;
   minScore: number;
   setMinScore: (value: number) => void;
   filteredCandidates: Candidate[];
+  totalCandidates: number;
+  candidatePage: number;
+  setCandidatePage: (page: number) => void;
   shortlist: string[];
   toggleShortlist: (id: string) => void;
   openProfile: (id: string) => void;
   isLoading: boolean;
   error: string | null;
   uniqueCompanies: string[];
+  uniqueLocations: string[];
   filterCompany: string;
   setFilterCompany: (value: string) => void;
   filterAvailability: string;
   setFilterAvailability: (value: string) => void;
   filterSeniority: string;
   setFilterSeniority: (value: string) => void;
+  filterSkill: string;
+  setFilterSkill: (value: string) => void;
+  filterMinYears: string;
+  setFilterMinYears: (value: string) => void;
+  filterLocation: string;
+  setFilterLocation: (value: string) => void;
 }) {
+  const LIMIT = 50;
+  const totalPages = Math.max(1, Math.ceil(totalCandidates / LIMIT));
+
   return (
     <div className="stack">
       <Panel title="Search controls">
         <div className="filters">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, skill, location…" />
+          <input value={filterSkill} onChange={(event) => setFilterSkill(event.target.value)} placeholder="Skill (e.g. Python)" />
+          <input
+            type="number"
+            value={filterMinYears}
+            onChange={(event) => setFilterMinYears(event.target.value)}
+            placeholder="Min years"
+            min={0}
+            style={{ width: '100px' }}
+          />
+          <select value={filterLocation} onChange={(event) => setFilterLocation(event.target.value)}>
+            <option value="">Any location</option>
+            {uniqueLocations.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
           <select value={filterCompany} onChange={(event) => setFilterCompany(event.target.value)}>
             <option value="">All companies</option>
             {uniqueCompanies.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -689,9 +781,20 @@ function TalentSearch({
         <Panel title="Could not load candidates">
           <Warning>{error}</Warning>
         </Panel>
+      ) : totalCandidates === 0 ? (
+        <Panel title="0 talent results">
+          <p className="body-copy">No candidates match the current filters. Try adjusting your search.</p>
+        </Panel>
       ) : (
-        <Panel title={`${filteredCandidates.length} talent results`} action={<button><AdjustmentsHorizontalIcon /> Columns</button>}>
+        <Panel title={`${totalCandidates} talent results`} action={<button><AdjustmentsHorizontalIcon /> Columns</button>}>
           <CandidateTable candidates={filteredCandidates} shortlist={shortlist} toggleShortlist={toggleShortlist} openProfile={openProfile} />
+          {totalPages > 1 && (
+            <div className="pagination">
+              <button disabled={candidatePage <= 1} onClick={() => setCandidatePage(candidatePage - 1)}>Previous</button>
+              <span>Page {candidatePage} of {totalPages}</span>
+              <button disabled={candidatePage >= totalPages} onClick={() => setCandidatePage(candidatePage + 1)}>Next</button>
+            </div>
+          )}
         </Panel>
       )}
     </div>

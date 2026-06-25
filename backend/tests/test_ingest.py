@@ -122,7 +122,7 @@ def test_ingest_employee_appears_in_candidates(test_client, monkeypatch):
     assert data["success"] is True
     extracted_name = data["extracted"]["name"]
 
-    candidates = test_client.get("/candidates").json()
+    candidates = test_client.get("/candidates").json()["items"]
     names = [c["name"] for c in candidates]
     assert extracted_name in names
 
@@ -137,7 +137,7 @@ def test_ingest_reupload_updates_not_duplicates(test_client, monkeypatch):
     test_client.post("/ingest", files=[_pdf_file("alice.pdf")])
     test_client.post("/ingest", files=[_pdf_file("alice.pdf")])
 
-    candidates = test_client.get("/candidates").json()
+    candidates = test_client.get("/candidates").json()["items"]
     alice_entries = [c for c in candidates if c["name"] == "Alice Example"]
     assert len(alice_entries) == 1
 
@@ -154,7 +154,7 @@ def test_ingest_reupload_refreshes_skills(test_client, monkeypatch):
     monkeypatch.setattr(main_module, "extract_text_from_pdf", lambda path: new_cv)
     test_client.post("/ingest", files=[_pdf_file("bob.pdf")])
 
-    candidates = test_client.get("/candidates").json()
+    candidates = test_client.get("/candidates").json()["items"]
     bob = next(c for c in candidates if c["name"] == "Bob Update")
     skill_names = [s["skill"] for s in bob["skills"]]
     assert "Kubernetes" in skill_names

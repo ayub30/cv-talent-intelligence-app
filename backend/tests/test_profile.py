@@ -237,7 +237,7 @@ def test_patch_profile_not_found(test_client):
 def test_patch_profile_appears_in_candidates(test_client):
     test_client.patch("/profile/emp_001", json={"availability_status": "available"})
     candidates_response = test_client.get("/candidates")
-    emp = next((c for c in candidates_response.json() if c["id"] == "emp_001"), None)
+    emp = next((c for c in candidates_response.json()["items"] if c["id"] == "emp_001"), None)
     assert emp is not None
     assert emp["availability_status"] == "available"
 

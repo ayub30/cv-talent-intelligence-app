@@ -121,12 +121,17 @@ class CandidateOut(BaseModel):
     skills: list[SkillOut]
 
 
+class CandidatesPageOut(BaseModel):
+    total: int
+    items: list[CandidateOut]
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/candidates", response_model=list[CandidateOut])
+@app.get("/candidates", response_model=CandidatesPageOut)
 def get_candidates(
     db: sqlite3.Connection = Depends(get_db),
     skill: str | None = Query(default=None),
@@ -135,8 +140,10 @@ def get_candidates(
     availability: str | None = Query(default=None),
     company: str | None = Query(default=None),
     location: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
     _auth: str = Depends(require_auth),
-) -> list[CandidateOut]:
+) -> CandidatesPageOut:
     join_clause = ""
     conditions: list[str] = []
     filter_params: list[Any] = []
@@ -162,19 +169,24 @@ def get_candidates(
         conditions.append("LOWER(e.location) = LOWER(?)")
         filter_params.append(location)
 
+    where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+    count_sql = f"SELECT COUNT(DISTINCT e.id) FROM employees e{join_clause}{where_clause}"
+    total: int = db.execute(count_sql, filter_params).fetchone()[0]
+
+    if total == 0:
+        return CandidatesPageOut(total=0, items=[])
+
     query_sql = (
         "SELECT DISTINCT e.id, e.name, e.reply_company, e.location, e.seniority, "
         "e.availability_status, e.current_project_name, e.last_updated, e.chroma_doc_id "
-        f"FROM employees e{join_clause}"
+        f"FROM employees e{join_clause}{where_clause} ORDER BY e.name LIMIT ? OFFSET ?"
     )
-    if conditions:
-        query_sql += " WHERE " + " AND ".join(conditions)
-    query_sql += " ORDER BY e.name"
-
-    rows = db.execute(query_sql, filter_params).fetchall()
+    offset = (page - 1) * limit
+    rows = db.execute(query_sql, [*filter_params, limit, offset]).fetchall()
 
     if not rows:
-        return []
+        return CandidatesPageOut(total=total, items=[])
 
     employee_ids = [row["id"] for row in rows]
     placeholders = ",".join("?" * len(employee_ids))
@@ -189,21 +201,24 @@ def get_candidates(
             SkillOut(skill=sr["skill"], years_experience=sr["years_experience"])
         )
 
-    return [
-        CandidateOut(
-            id=row["id"],
-            name=row["name"],
-            reply_company=row["reply_company"],
-            location=row["location"],
-            seniority=row["seniority"],
-            availability_status=row["availability_status"],
-            current_project_name=row["current_project_name"],
-            last_updated=row["last_updated"],
-            chroma_doc_id=row["chroma_doc_id"],
-            skills=skills_by_employee.get(row["id"], []),
-        )
-        for row in rows
-    ]
+    return CandidatesPageOut(
+        total=total,
+        items=[
+            CandidateOut(
+                id=row["id"],
+                name=row["name"],
+                reply_company=row["reply_company"],
+                location=row["location"],
+                seniority=row["seniority"],
+                availability_status=row["availability_status"],
+                current_project_name=row["current_project_name"],
+                last_updated=row["last_updated"],
+                chroma_doc_id=row["chroma_doc_id"],
+                skills=skills_by_employee.get(row["id"], []),
+            )
+            for row in rows
+        ],
+    )
 
 
 def _mock_response() -> AskResponse:
