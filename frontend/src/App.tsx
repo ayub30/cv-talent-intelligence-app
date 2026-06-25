@@ -122,6 +122,7 @@ const AVAILABILITY_LABELS: Record<string, string> = {
 };
 
 const STALE_MONTHS = 6;
+const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
 function isCandidateStale(last_updated: string): boolean {
   const cutoff = new Date();
@@ -237,6 +238,28 @@ export function App() {
     setCandidates([]);
     setPage('dashboard');
   }
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let timerId: ReturnType<typeof setTimeout>;
+    function resetTimer() {
+      clearTimeout(timerId);
+      timerId = setTimeout(() => {
+        void fetch('/auth/logout', { method: 'POST' });
+        setIsAuthenticated(false);
+        setCandidates([]);
+        setPage('dashboard');
+      }, INACTIVITY_TIMEOUT_MS);
+    }
+    const events = ['mousemove', 'keydown', 'click', 'touchstart'] as const;
+    resetTimer();
+    events.forEach((evt) => window.addEventListener(evt, resetTimer));
+    return () => {
+      clearTimeout(timerId);
+      events.forEach((evt) => window.removeEventListener(evt, resetTimer));
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
 
   useEffect(() => {
     refreshCandidates();
