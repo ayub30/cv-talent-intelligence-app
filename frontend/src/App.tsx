@@ -72,6 +72,8 @@ type AskMatch = {
 type ApiProfile = ApiCandidate & {
   cv_text: string;
   is_stale: boolean;
+  completeness: number;
+  gaps: string[];
 };
 
 type ProfileEditFields = {
@@ -828,6 +830,8 @@ function Profile({
   const evidenceItems = cvText
     ? cvText.split('. ').map((s) => s.trim()).filter(Boolean)
     : [];
+  const currentCompleteness = profileApiData?.completeness ?? candidate.completeness;
+  const currentGaps = profileApiData?.gaps ?? candidate.gaps;
   return (
     <div className="two-col">
       <Panel title={candidate.name} action={<button onClick={() => toggleShortlist(candidate.id)}>{shortlisted ? 'Shortlisted' : 'Add to shortlist'}</button>}>
@@ -836,7 +840,7 @@ function Profile({
         <div className="profile-metrics">
           <Score label="Match" value={candidate.score} />
           <Score label="Confidence" value={candidate.confidence} />
-          <Score label="Completeness" value={candidate.completeness} />
+          <Score label="Completeness" value={currentCompleteness} />
         </div>
         <div className="pills">{candidate.skills.map((skill) => <Pill key={skill}>{skill}</Pill>)}</div>
       </Panel>
@@ -859,7 +863,7 @@ function Profile({
                 ? evidenceItems.map((item, i) => <Evidence key={i}>{item}</Evidence>)
                 : <p className="body-copy">No CV evidence indexed yet.</p>
         )}
-        {tab === 'Gaps' && (candidate.gaps.length ? candidate.gaps.map((item) => <Warning key={item}>{item}</Warning>) : <p className="body-copy">No gaps recorded.</p>)}
+        {tab === 'Gaps' && (currentGaps.length ? currentGaps.map((item) => <Warning key={item}>{item}</Warning>) : <p className="body-copy">No gaps recorded.</p>)}
         {tab === 'Edit' && (
           <ProfileEditForm
             fields={editFields}

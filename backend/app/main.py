@@ -387,6 +387,54 @@ def _is_stale(last_updated_iso: str) -> bool:
     return last_updated <= threshold
 
 
+def _compute_completeness(
+    name: str,
+    location: str,
+    seniority: str,
+    availability_status: str,
+    skills: list,
+    cv_text: str,
+    is_stale: bool,
+) -> tuple[int, list[str]]:
+    gaps: list[str] = []
+    score = 0
+
+    if name and name.strip():
+        score += 1
+    else:
+        gaps.append("No name recorded")
+
+    if location and location.strip():
+        score += 1
+    else:
+        gaps.append("No location recorded")
+
+    if seniority and seniority.strip():
+        score += 1
+    else:
+        gaps.append("No seniority recorded")
+
+    if availability_status and availability_status.strip():
+        score += 1
+    else:
+        gaps.append("No availability status recorded")
+
+    if len(skills) >= 1:
+        score += 1
+    if len(skills) < 3:
+        gaps.append("Fewer than 3 skills indexed")
+
+    if cv_text and cv_text.strip():
+        score += 1
+    else:
+        gaps.append("No CV text indexed")
+
+    if is_stale:
+        gaps.append("CV not updated in over 6 months")
+
+    return round(score / 6 * 100), gaps
+
+
 class ProfileOut(BaseModel):
     id: str
     name: str
@@ -400,6 +448,8 @@ class ProfileOut(BaseModel):
     skills: list[SkillOut]
     cv_text: str
     is_stale: bool
+    completeness: int
+    gaps: list[str]
 
 
 @app.get("/profile/{employee_id}", response_model=ProfileOut)
@@ -426,6 +476,17 @@ def get_profile(
     result = collection.get(ids=[row["chroma_doc_id"]], include=["documents"])
     cv_text = result["documents"][0] if result["documents"] else ""
 
+    is_stale = _is_stale(row["last_updated"])
+    completeness, gaps = _compute_completeness(
+        name=row["name"],
+        location=row["location"],
+        seniority=row["seniority"],
+        availability_status=row["availability_status"],
+        skills=skill_rows,
+        cv_text=cv_text or "",
+        is_stale=is_stale,
+    )
+
     return ProfileOut(
         id=row["id"],
         name=row["name"],
@@ -438,7 +499,9 @@ def get_profile(
         chroma_doc_id=row["chroma_doc_id"],
         skills=[SkillOut(skill=sr["skill"], years_experience=sr["years_experience"]) for sr in skill_rows],
         cv_text=cv_text or "",
-        is_stale=_is_stale(row["last_updated"]),
+        is_stale=is_stale,
+        completeness=completeness,
+        gaps=gaps,
     )
 
 

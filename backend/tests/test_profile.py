@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.auth import require_auth
 from app.chroma_store import init_collection, make_ephemeral_client, seed_collection
 from app.database import init_db, seed_db
-from app.main import _is_stale, app, get_collection, get_db
+from app.main import _compute_completeness, _is_stale, app, get_collection, get_db
 
 
 @pytest.fixture()
@@ -240,3 +240,113 @@ def test_patch_profile_appears_in_candidates(test_client):
     emp = next((c for c in candidates_response.json() if c["id"] == "emp_001"), None)
     assert emp is not None
     assert emp["availability_status"] == "available"
+
+
+# --- completeness and gaps ---
+
+@pytest.fixture()
+def incomplete_client():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    init_db(conn)
+    seed_db(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    # location is empty, no skills inserted — missing 3 of 6 completeness fields
+    conn.execute(
+        """INSERT INTO employees
+           (id, name, reply_company, location, seniority, availability_status,
+            current_project_name, last_updated, chroma_doc_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("emp_incomplete", "Incomplete User", "Test Co", "", "senior", "available", None, now, "emp_incomplete"),
+    )
+    conn.commit()
+
+    chroma_client = make_ephemeral_client()
+    collection = init_collection(chroma_client)
+    seed_collection(collection)
+
+    app.dependency_overrides[get_db] = lambda: conn
+    app.dependency_overrides[get_collection] = lambda: collection
+    app.dependency_overrides[require_auth] = lambda: "test@example.com"
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        yield client
+
+    app.dependency_overrides.clear()
+    conn.close()
+
+
+def test_profile_includes_completeness_and_gaps_fields(test_client):
+    response = test_client.get("/profile/emp_001")
+    assert response.status_code == 200
+    data = response.json()
+    assert "completeness" in data
+    assert "gaps" in data
+    assert isinstance(data["completeness"], int)
+    assert isinstance(data["gaps"], list)
+
+
+def test_profile_full_profile_has_100_completeness(test_client):
+    response = test_client.get("/profile/emp_001")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["completeness"] == 100
+    assert data["gaps"] == []
+
+
+def test_profile_missing_location_reduces_completeness(incomplete_client):
+    response = incomplete_client.get("/profile/emp_incomplete")
+    assert response.status_code == 200
+    data = response.json()
+    # name, seniority, availability_status present (3/6); location, skills, cv_text missing
+    assert data["completeness"] == 50
+    assert "No location recorded" in data["gaps"]
+
+
+def test_profile_gaps_fewer_than_3_skills(incomplete_client):
+    response = incomplete_client.get("/profile/emp_incomplete")
+    data = response.json()
+    assert "Fewer than 3 skills indexed" in data["gaps"]
+
+
+def test_profile_gaps_no_cv_text(incomplete_client):
+    response = incomplete_client.get("/profile/emp_incomplete")
+    data = response.json()
+    assert "No CV text indexed" in data["gaps"]
+
+
+def test_profile_stale_adds_gap(stale_client):
+    response = stale_client.get("/profile/emp_001")
+    assert response.status_code == 200
+    data = response.json()
+    assert "CV not updated in over 6 months" in data["gaps"]
+
+
+def test_compute_completeness_all_present():
+    score, gaps = _compute_completeness("Alice", "London", "senior", "available", [1, 2, 3], "some cv", False)
+    assert score == 100
+    assert gaps == []
+
+
+def test_compute_completeness_missing_location():
+    score, gaps = _compute_completeness("Alice", "", "senior", "available", [1, 2, 3], "some cv", False)
+    assert score == round(5 / 6 * 100)
+    assert "No location recorded" in gaps
+
+
+def test_compute_completeness_fewer_than_3_skills():
+    score, gaps = _compute_completeness("Alice", "London", "senior", "available", [1], "some cv", False)
+    assert "Fewer than 3 skills indexed" in gaps
+
+
+def test_compute_completeness_stale_adds_gap():
+    score, gaps = _compute_completeness("Alice", "London", "senior", "available", [1, 2, 3], "some cv", True)
+    assert score == 100
+    assert "CV not updated in over 6 months" in gaps
+
+
+def test_compute_completeness_no_cv_text():
+    score, gaps = _compute_completeness("Alice", "London", "senior", "available", [1, 2, 3], "", False)
+    assert "No CV text indexed" in gaps
+    assert score == round(5 / 6 * 100)
