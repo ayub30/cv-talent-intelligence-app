@@ -1,4 +1,5 @@
 import calendar
+import logging
 import os
 import re
 import shutil
@@ -91,10 +92,16 @@ def logout(response: Response) -> dict[str, str]:
     return {"message": "logged out"}
 
 
+class HistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     contract: str | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=5)
 
 
 class AskResponse(BaseModel):
@@ -284,6 +291,7 @@ def _heuristic_ask(
     filters: dict[str, Any],
     db: sqlite3.Connection,
     collection: chromadb.Collection,
+    history: list[dict[str, str]] | None = None,
 ) -> AskResponse:
     # Attempt semantic search; silently skip if embedding model unavailable
     semantic: dict[str, dict[str, Any]] = {}
@@ -348,8 +356,14 @@ def _heuristic_ask(
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     top = ranked[:5]
-    names = ", ".join(m["name"] for m in top[:3])
-    answer = f"Based on CV analysis, top candidates for your query: {names}."
+
+    if history:
+        context = "; ".join(f"{t['role']}: {t['content']}" for t in history[-3:])
+        names = ", ".join(m["name"] for m in top[:3])
+        answer = f"[Context: {context}] Based on CV analysis, top candidates: {names}."
+    else:
+        names = ", ".join(m["name"] for m in top[:3])
+        answer = f"Based on CV analysis, top candidates for your query: {names}."
 
     return AskResponse(source="tools", answer=answer, matches=top)
 
@@ -361,14 +375,14 @@ def ask(
     collection: chromadb.Collection = Depends(get_collection),
     _auth: str = Depends(require_auth),
 ) -> AskResponse:
+    history = [t.model_dump() for t in payload.history[-5:]]
     try:
-        heuristic = _heuristic_ask(payload.question, payload.filters, db, collection)
+        heuristic = _heuristic_ask(payload.question, payload.filters, db, collection, history)
         if is_loaded():
             try:
-                answer = generate_answer(payload.question, heuristic.matches)
+                answer = generate_answer(payload.question, heuristic.matches, history)
                 return AskResponse(source="llm", answer=answer, matches=heuristic.matches)
             except Exception as exc:
-                import logging
                 logging.getLogger(__name__).error("LLM inference failed: %s", exc)
         return heuristic
     except Exception:

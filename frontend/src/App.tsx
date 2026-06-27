@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AdjustmentsHorizontalIcon,
   ArrowDownTrayIcon,
@@ -67,6 +67,11 @@ type AskMatch = {
   role?: string;
   score?: number;
   evidence?: string;
+};
+
+type ChatTurn = {
+  role: 'user' | 'assistant';
+  content: string;
 };
 
 type ApiProfile = ApiCandidate & {
@@ -175,6 +180,8 @@ export function App() {
   const [aiMatches, setAiMatches] = useState<AskMatch[]>([]);
   const [aiError, setAiError] = useState<string | null>(null);
   const [isAsking, setIsAsking] = useState(false);
+  const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
+  const prevPageRef = useRef<Page>(page);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [totalCandidates, setTotalCandidates] = useState(0);
   const [candidatePage, setCandidatePage] = useState(1);
@@ -249,6 +256,13 @@ export function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (prevPageRef.current === 'ai' && page !== 'ai') {
+      setChatHistory([]);
+    }
+    prevPageRef.current = page;
+  }, [page]);
 
   // Initial mount fetch — determines auth state and loads first page
   useEffect(() => {
@@ -364,6 +378,8 @@ export function App() {
     setIsAsking(true);
     setAiError(null);
     setPage('ai');
+    const userTurn: ChatTurn = { role: 'user', content: question };
+    setChatHistory((prev) => [...prev, userTurn]);
     try {
       const response = await fetch('/ask', {
         method: 'POST',
@@ -372,15 +388,19 @@ export function App() {
           question,
           contract,
           filters: { query, minScore, shortlistedIds: shortlist },
+          history: chatHistory.slice(-5),
         }),
       });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
       const data = await response.json();
       setAiAnswer(data.answer);
       setAiMatches(data.matches ?? []);
+      setChatHistory((prev) => [...prev, { role: 'assistant', content: data.answer }]);
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : 'The assistant is unreachable. Check the backend.');
+      const msg = error instanceof Error ? error.message : 'The assistant is unreachable. Check the backend.';
+      setAiError(msg);
       setAiMatches([]);
+      setChatHistory((prev) => prev.slice(0, -1));
     } finally {
       setIsAsking(false);
     }
@@ -501,10 +521,10 @@ export function App() {
               setAskInput={setAskInput}
               askLLM={askLLM}
               isAsking={isAsking}
-              aiAnswer={aiAnswer}
               aiError={aiError}
               aiMatches={aiMatches}
               candidates={candidates}
+              chatHistory={chatHistory}
             />
           )}
           {page === 'profile' && selected && (
@@ -834,35 +854,47 @@ function AIWorkspace({
   setAskInput,
   askLLM,
   isAsking,
-  aiAnswer,
   aiError,
   aiMatches,
   candidates,
+  chatHistory,
 }: {
   askInput: string;
   setAskInput: (value: string) => void;
   askLLM: (question?: string) => void;
   isAsking: boolean;
-  aiAnswer: string;
   aiError: string | null;
   aiMatches: AskMatch[];
   candidates: Candidate[];
+  chatHistory: ChatTurn[];
 }) {
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatHistory, isAsking]);
+
   return (
     <div className="two-col wide-left">
       <Panel title="AI match workspace" action={<span className="status-pill">Backend /ask</span>}>
         <div className="chat-window">
-          <div className="bubble user">Find people for a healthcare Azure data migration with RAG experience.</div>
-          {isAsking ? (
-            <div className="bubble assistant">Thinking…</div>
-          ) : aiError ? (
-            <Warning>{aiError}</Warning>
-          ) : (
-            <div className="bubble assistant">{aiAnswer}</div>
+          {chatHistory.length === 0 && !isAsking && (
+            <div className="bubble assistant">Ask the assistant to rank people using the backend /ask route.</div>
           )}
+          {chatHistory.map((turn, i) => (
+            <div key={i} className={`bubble ${turn.role}`}>{turn.content}</div>
+          ))}
+          {isAsking && <div className="bubble assistant">Thinking…</div>}
+          {aiError && !isAsking && <Warning>{aiError}</Warning>}
+          <div ref={chatEndRef} />
         </div>
         <div className="ask-bar">
-          <input value={askInput} onChange={(event) => setAskInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && askLLM()} />
+          <input
+            value={askInput}
+            onChange={(event) => setAskInput(event.target.value)}
+            onKeyDown={(event) => event.key === 'Enter' && !isAsking && askLLM()}
+            placeholder="Ask a follow-up…"
+          />
           <button disabled={isAsking} onClick={() => askLLM()}>
             <PaperAirplaneIcon />
             {isAsking ? 'Asking…' : 'Ask'}
