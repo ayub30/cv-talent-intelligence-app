@@ -1,7 +1,6 @@
 import calendar
 import logging
 import os
-import re
 import shutil
 import sqlite3
 import tempfile
@@ -19,6 +18,7 @@ from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
 from .llm import generate_answer, init_llm, is_loaded
+from .matcher import rank_candidates
 from .tools import get_profile_cv, query_candidates, search_cvs
 
 
@@ -259,33 +259,6 @@ def _mock_response() -> AskResponse:
     )
 
 
-def _infer_role(cv_text: str, seniority: str, company: str) -> str:
-    m = re.search(r"\bis an? ([A-Z][A-Za-z &\-]+?) at\b", cv_text)
-    if m:
-        return m.group(1).strip()
-    return f"{seniority.capitalize()} at {company}" if seniority else "Professional"
-
-
-def _extract_evidence(cv_text: str, question: str, max_len: int = 160) -> str:
-    if not cv_text:
-        return "See CV for details."
-    q_words = set(question.lower().split())
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cv_text) if s.strip()]
-    best, best_score = sentences[0] if sentences else cv_text, -1
-    for s in sentences:
-        overlap = len(q_words & set(s.lower().split()))
-        if overlap > best_score:
-            best_score, best = overlap, s
-    return (best[:max_len] + "...") if len(best) > max_len else best
-
-
-def _keyword_score(cv_text: str, question: str) -> int:
-    q_words = set(question.lower().split()) - {"the", "a", "an", "for", "who", "is", "in", "of"}
-    cv_words = set(cv_text.lower().split())
-    overlap = len(q_words & cv_words)
-    return min(75, overlap * 8)
-
-
 def _heuristic_ask(
     question: str,
     filters: dict[str, Any],
@@ -312,9 +285,10 @@ def _heuristic_ask(
         candidates = query_candidates(db, {})
 
     seen: set[str] = set()
-    ranked: list[dict[str, Any]] = []
+    all_candidates: list[dict[str, Any]] = []
+    cv_lookup: dict[str, str] = {}
 
-    # Semantic matches first (carry higher scores)
+    # Semantic matches first (carry pre-computed scores)
     for emp_id, sem in semantic.items():
         if emp_id in seen:
             continue
@@ -324,48 +298,42 @@ def _heuristic_ask(
         ).fetchone()
         if not row:
             continue
-        ranked.append(
+        cv_lookup[emp_id] = sem["cv_text"]
+        all_candidates.append(
             {
-                "name": sem["name"],
-                "role": _infer_role(sem["cv_text"], row["seniority"], row["reply_company"]),
-                "score": sem["score"],
-                "evidence": _extract_evidence(sem["cv_text"], question),
                 "employee_id": emp_id,
+                "name": sem["name"],
+                "seniority": row["seniority"],
+                "company": row["reply_company"],
+                "chroma_doc_id": emp_id,
+                "score": sem["score"],
             }
         )
 
-    # SQL-only candidates (keyword scored)
+    # SQL-only candidates (no pre-computed score — keyword scored by rank_candidates)
     for c in candidates:
         emp_id = c["employee_id"]
         if emp_id in seen:
             continue
         seen.add(emp_id)
         cv = get_profile_cv(collection, c["chroma_doc_id"])
-        ranked.append(
-            {
-                "name": c["name"],
-                "role": _infer_role(cv, c["seniority"], c["company"]),
-                "score": _keyword_score(cv, question),
-                "evidence": _extract_evidence(cv, question),
-                "employee_id": emp_id,
-            }
-        )
+        cv_lookup[c["chroma_doc_id"]] = cv
+        all_candidates.append(c)
 
-    if not ranked:
+    if not all_candidates:
         return _mock_response()
 
-    ranked.sort(key=lambda x: x["score"], reverse=True)
-    top = ranked[:5]
+    ranked = rank_candidates(question, all_candidates, cv_lookup)
 
     if history:
         context = "; ".join(f"{t['role']}: {t['content']}" for t in history[-3:])
-        names = ", ".join(m["name"] for m in top[:3])
+        names = ", ".join(m["name"] for m in ranked[:3])
         answer = f"[Context: {context}] Based on CV analysis, top candidates: {names}."
     else:
-        names = ", ".join(m["name"] for m in top[:3])
+        names = ", ".join(m["name"] for m in ranked[:3])
         answer = f"Based on CV analysis, top candidates for your query: {names}."
 
-    return AskResponse(source="tools", answer=answer, matches=top)
+    return AskResponse(source="tools", answer=answer, matches=ranked)
 
 
 @app.post("/ask", response_model=AskResponse)
