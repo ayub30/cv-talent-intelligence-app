@@ -17,7 +17,7 @@ from .auth import create_access_token, require_auth, verify_password
 from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db, seed_users
 from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
-from .llm import generate_answer, init_llm, is_loaded
+from .llm import LLMBackend, load_llm
 from .matcher import rank_candidates
 from .tools import get_profile_cv, query_candidates, search_cvs
 
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     seed_collection(collection)
     app.state.chroma_collection = collection
 
-    init_llm()
+    app.state.llm_backend = load_llm()
 
     yield
 
@@ -63,6 +63,10 @@ def get_db() -> sqlite3.Connection:
 
 def get_collection() -> chromadb.Collection:
     return app.state.chroma_collection
+
+
+def get_llm_backend() -> "LLMBackend | None":
+    return getattr(app.state, "llm_backend", None)
 
 
 class LoginRequest(BaseModel):
@@ -341,14 +345,15 @@ def ask(
     payload: AskRequest,
     db: sqlite3.Connection = Depends(get_db),
     collection: chromadb.Collection = Depends(get_collection),
+    llm: "LLMBackend | None" = Depends(get_llm_backend),
     _auth: str = Depends(require_auth),
 ) -> AskResponse:
     history = [t.model_dump() for t in payload.history[-5:]]
     try:
         heuristic = _heuristic_ask(payload.question, payload.filters, db, collection, history)
-        if is_loaded():
+        if llm is not None:
             try:
-                answer = generate_answer(payload.question, heuristic.matches, history)
+                answer = llm.generate_answer(payload.question, heuristic.matches, history)
                 return AskResponse(source="llm", answer=answer, matches=heuristic.matches)
             except Exception as exc:
                 logging.getLogger(__name__).error("LLM inference failed: %s", exc)
