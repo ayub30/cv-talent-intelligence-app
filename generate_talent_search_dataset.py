@@ -24,11 +24,10 @@ import os
 import random
 import sys
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+from scripts.teacher_model import TeacherModel
+
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
 
@@ -255,6 +254,35 @@ _AVAILABILITY = ["available", "busy", "rolling_off"]
 _DIVISIONS = ["Reply Digital", "Reply Data", "Reply Cloud", "Reply Cyber", "Reply AI"]
 
 
+class _DryRunTeacher:
+    """No-op teacher for --dry-run mode: returns deterministic fake completions."""
+
+    def complete(self, messages: list[dict]) -> str:
+        return "[dry-run] Matching candidates found."
+
+    def call(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_retries: int = 4,
+    ) -> dict:
+        if tools:
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "dry_00",
+                        "type": "function",
+                        "function": {
+                            "name": "search_cvs",
+                            "arguments": '{"query": "dry-run candidate", "n_results": 5}',
+                        },
+                    }
+                ],
+            }
+        return {"content": "[dry-run] Matching candidates found.", "tool_calls": []}
+
+
 def _simulate_tool_result(tool_name: str, args: dict[str, Any]) -> str:
     rng = random.Random(hash(json.dumps(args, sort_keys=True)) & 0xFFFFFFFF)
 
@@ -307,42 +335,6 @@ def _simulate_tool_result(tool_name: str, args: dict[str, Any]) -> str:
     return json.dumps({"error": "unknown tool"})
 
 
-def _call_groq(
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    max_retries: int = 4,
-) -> dict:
-    payload: dict[str, Any] = {"model": MODEL, "messages": messages}
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-
-    encoded = json.dumps(payload).encode()
-
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(
-                GROQ_API_URL,
-                data=encoded,
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                wait = 2 ** (attempt + 1)
-                print(f"  [rate limit] waiting {wait}s...", file=sys.stderr)
-                time.sleep(wait)
-                continue
-            body = exc.read().decode(errors="replace")
-            raise RuntimeError(f"Groq API {exc.code}: {body}") from exc
-
-    raise RuntimeError("Max retries exceeded")
-
-
 def _parse_tool_calls(raw: list[dict]) -> list[dict]:
     result = []
     for tc in raw:
@@ -355,7 +347,7 @@ def _parse_tool_calls(raw: list[dict]) -> list[dict]:
     return result
 
 
-def _generate_questions_batch(category: str, n: int) -> list[str]:
+def _generate_questions_batch(category: str, n: int, teacher) -> list[str]:
     desc = {
         "find_talent": "open-ended talent discovery by skills, domain, or experience",
         "filter_by_skills": "narrowing a list by specific criteria: skill, seniority, years, location, availability",
@@ -368,14 +360,13 @@ def _generate_questions_batch(category: str, n: int) -> list[str]:
         "Vary: technology stacks, seniority levels, domains, and phrasing. "
         "Return ONLY a JSON array of strings. No other text."
     )
-    resp = _call_groq([
+    content = teacher.complete([
         {
             "role": "system",
             "content": "You generate training data for a talent intelligence system. Output valid JSON only.",
         },
         {"role": "user", "content": prompt},
-    ])
-    content = resp["choices"][0]["message"]["content"].strip()
+    ]).strip()
     if content.startswith("```"):
         content = content.split("```")[1]
         if content.startswith("json"):
@@ -390,7 +381,7 @@ def _generate_questions_batch(category: str, n: int) -> list[str]:
     return []
 
 
-def _build_question_pool(category: str, target: int, delay: float) -> list[str]:
+def _build_question_pool(category: str, target: int, delay: float, teacher) -> list[str]:
     pool = SEED_QUESTIONS[category][:]
     if len(pool) >= target:
         random.shuffle(pool)
@@ -402,7 +393,7 @@ def _build_question_pool(category: str, target: int, delay: float) -> list[str]:
     while len(pool) - len(SEED_QUESTIONS[category]) < needed:
         remaining = needed - (len(pool) - len(SEED_QUESTIONS[category]))
         n = min(batch_size, remaining)
-        batch = _generate_questions_batch(category, n)
+        batch = _generate_questions_batch(category, n, teacher)
         pool.extend(batch)
         if not batch:
             print(f"  Warning: question generation returned empty batch", file=sys.stderr)
@@ -413,20 +404,19 @@ def _build_question_pool(category: str, target: int, delay: float) -> list[str]:
     return pool[:target]
 
 
-def _generate_example(category: str, question: str) -> dict | None:
+def _generate_example(category: str, question: str, teacher) -> dict | None:
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
 
     try:
-        resp1 = _call_groq(messages, tools=TOOL_DEFS)
+        msg1 = teacher.call(messages, tools=TOOL_DEFS)
     except Exception as exc:
         print(f"  [error] tool call failed: {exc}", file=sys.stderr)
         return None
 
-    assistant_msg = resp1["choices"][0]["message"]
-    raw_tool_calls: list[dict] = assistant_msg.get("tool_calls") or []
+    raw_tool_calls: list[dict] = msg1.get("tool_calls") or []
     tool_calls = _parse_tool_calls(raw_tool_calls)
 
     if not tool_calls:
@@ -434,7 +424,7 @@ def _generate_example(category: str, question: str) -> dict | None:
 
     messages.append({
         "role": "assistant",
-        "content": assistant_msg.get("content"),
+        "content": msg1.get("content"),
         "tool_calls": raw_tool_calls,
     })
     for raw_tc, tc in zip(raw_tool_calls, tool_calls):
@@ -445,36 +435,17 @@ def _generate_example(category: str, question: str) -> dict | None:
         })
 
     try:
-        resp2 = _call_groq(messages)
+        answer = teacher.complete(messages).strip()
     except Exception as exc:
         print(f"  [error] answer call failed: {exc}", file=sys.stderr)
         return None
 
-    answer = resp2["choices"][0]["message"].get("content", "").strip()
     if not answer:
         return None
 
     return {
         "instruction": question,
         "response": {"tool_calls": tool_calls, "answer": answer},
-        "category": category,
-    }
-
-
-def _stub_example(category: str, question: str) -> dict:
-    """Return a deterministic fake example — used in --dry-run mode."""
-    tool_map = {
-        "find_talent": {"name": "search_cvs", "args": {"query": question, "n_results": 5}},
-        "filter_by_skills": {"name": "query_candidates", "args": {"filters": {"skill": "Python", "seniority": "senior"}}},
-        "build_team": {"name": "search_cvs", "args": {"query": question, "n_results": 10}},
-        "check_availability": {"name": "query_candidates", "args": {"filters": {"availability": "available"}}},
-    }
-    return {
-        "instruction": question,
-        "response": {
-            "tool_calls": [tool_map[category]],
-            "answer": "[dry-run] No candidates found in dry-run mode.",
-        },
         "category": category,
     }
 
@@ -499,6 +470,11 @@ def main() -> None:
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
+    if args_ns.dry_run:
+        teacher: TeacherModel | _DryRunTeacher = _DryRunTeacher()
+    else:
+        teacher = TeacherModel(os.environ["GROQ_API_KEY"], MODEL, GROQ_API_URL)
+
     total_target = sum(CATEGORY_COUNTS.values())
     print(f"Target: {total_target} examples → {args_ns.output}")
     if args_ns.dry_run:
@@ -510,24 +486,17 @@ def main() -> None:
         dry_target = 2 if args_ns.dry_run else target
         print(f"\n[{category}] target={dry_target}", flush=True)
 
-        if args_ns.dry_run:
-            seeds = SEED_QUESTIONS[category][:dry_target]
-            for q in seeds:
-                examples.append(_stub_example(category, q))
-            print(f"  stub: {dry_target} examples")
-            continue
-
-        questions = _build_question_pool(category, target, args_ns.delay)
+        questions = _build_question_pool(category, dry_target, args_ns.delay, teacher)
 
         category_examples: list[dict] = []
         q_idx = 0
         skips = 0
-        max_skips = target // 2
+        max_skips = max(1, dry_target // 2)
 
-        while len(category_examples) < target:
+        while len(category_examples) < dry_target:
             if q_idx >= len(questions):
                 print(
-                    f"  Warning: ran out of questions after {len(category_examples)}/{target}",
+                    f"  Warning: ran out of questions after {len(category_examples)}/{dry_target}",
                     file=sys.stderr,
                 )
                 break
@@ -535,9 +504,9 @@ def main() -> None:
             q = questions[q_idx]
             q_idx += 1
             n = len(category_examples) + 1
-            print(f"  [{n}/{target}] {q[:72]}{'...' if len(q) > 72 else ''}", flush=True)
+            print(f"  [{n}/{dry_target}] {q[:72]}{'...' if len(q) > 72 else ''}", flush=True)
 
-            example = _generate_example(category, q)
+            example = _generate_example(category, q, teacher)
             if example:
                 category_examples.append(example)
             else:

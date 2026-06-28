@@ -7,8 +7,7 @@ Requires: GROQ_API_KEY environment variable (see .env.example)
 
 import os
 import json
-
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]  # raises KeyError if missing
+from scripts.teacher_model import TeacherModel
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
@@ -33,40 +32,25 @@ EXAMPLE_QUESTIONS = {
 }
 
 
-def call_groq(messages: list[dict]) -> str:
-    import urllib.request
-
-    payload = json.dumps({"model": MODEL, "messages": messages}).encode()
-    req = urllib.request.Request(
-        GROQ_API_URL,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
-
-
-def generate_example(category: str, question: str) -> dict:
+def generate_example(category: str, question: str, teacher: TeacherModel) -> dict:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
-    raw = call_groq(messages)
+    raw = teacher.complete(messages)
     return {"instruction": question, "response": raw, "category": category}
 
 
 def main() -> None:
+    teacher = TeacherModel(os.environ["GROQ_API_KEY"], MODEL, GROQ_API_URL)
+
     os.makedirs("data", exist_ok=True)
     out_path = "data/dataset.jsonl"
 
     with open(out_path, "w") as fh:
         for category in CATEGORIES:
             question = EXAMPLE_QUESTIONS[category]
-            example = generate_example(category, question)
+            example = generate_example(category, question, teacher)
             fh.write(json.dumps(example) + "\n")
             print(f"[{category}] done")
 
