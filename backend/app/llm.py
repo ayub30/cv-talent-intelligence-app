@@ -1,85 +1,71 @@
-"""MLX LLM loader and inference for the /ask endpoint."""
+"""Model-agnostic LLM backend for the /ask endpoint."""
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-MLX_MODEL_PATH = os.getenv("MLX_MODEL_PATH", "../llama-3.2-3B-fused-800")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+
+_SYSTEM_PROMPT = (
+    "You are a talent intelligence assistant helping a programme manager find the right "
+    "consultants. Respond with a concise 2-3 sentence recommendation based only on the "
+    "candidate data provided."
+)
 
 
-@dataclass(frozen=True)
-class LLMBackend:
-    model: Any
-    tokenizer: Any
+@runtime_checkable
+class LLMBackend(Protocol):
+    def generate_answer(
+        self,
+        question: str,
+        candidates: list[dict[str, Any]],
+        history: list[dict[str, str]] | None = None,
+    ) -> str: ...
 
+
+class OllamaBackend:
     def generate_answer(
         self,
         question: str,
         candidates: list[dict[str, Any]],
         history: list[dict[str, str]] | None = None,
     ) -> str:
-        """Synthesise a natural-language answer using the loaded MLX model."""
-        import mlx_lm
+        context_lines = [
+            f"- {c['name']} ({c['role']}, score {c['score']}): {c['evidence']}"
+            for c in candidates[:5]
+        ]
+        context = "\n".join(context_lines) or "No candidates found."
+        system = f"{_SYSTEM_PROMPT}\n\nTop candidates:\n{context}"
 
-        prompt = _build_prompt(question, candidates, history)
-        response: str = mlx_lm.generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=256,
-            verbose=False,
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+        for turn in (history or []):
+            messages.append({"role": turn.get("role", "user"), "content": turn["content"]})
+        messages.append({"role": "user", "content": question})
+
+        response = httpx.post(
+            f"{OLLAMA_BASE_URL}/v1/chat/completions",
+            json={"model": OLLAMA_MODEL, "messages": messages, "max_tokens": 256},
+            timeout=60.0,
         )
-        return response.strip()
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
 
 
 def load_llm() -> "LLMBackend | None":
-    """Load the fused MLX model. Returns LLMBackend on success, None if unavailable."""
-    if not os.path.isdir(MLX_MODEL_PATH):
-        logger.info("Model directory %r not found; LLM inference disabled", MLX_MODEL_PATH)
+    if LLM_PROVIDER != "ollama":
+        logger.info("LLM_PROVIDER=%r; LLM inference disabled", LLM_PROVIDER)
         return None
 
     try:
-        import mlx_lm
-
-        logger.info("Loading fused MLX model from %r", MLX_MODEL_PATH)
-        model, tokenizer = mlx_lm.load(MLX_MODEL_PATH)
-        logger.info("MLX model loaded successfully")
-        return LLMBackend(model=model, tokenizer=tokenizer)
-    except ImportError:
-        logger.warning("mlx-lm is not installed; LLM inference disabled")
+        r = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5.0)
+        r.raise_for_status()
+        logger.info("Ollama reachable at %s; using model %s", OLLAMA_BASE_URL, OLLAMA_MODEL)
+        return OllamaBackend()
     except Exception as exc:
-        logger.error("Failed to load MLX model: %s", exc)
-
-    return None
-
-
-def _build_prompt(
-    question: str,
-    candidates: list[dict[str, Any]],
-    history: list[dict[str, str]] | None = None,
-) -> str:
-    context_lines = [
-        f"- {c['name']} ({c['role']}, score {c['score']}): {c['evidence']}"
-        for c in candidates[:5]
-    ]
-    context = "\n".join(context_lines) or "No candidates found."
-
-    turns = (
-        "<|begin_of_text|>"
-        "<|start_header_id|>system<|end_header_id|>\n"
-        "You are a talent intelligence assistant helping a programme manager find the right "
-        "consultants. Respond with a concise 2-3 sentence recommendation based only on the "
-        f"candidate data provided.\n\nTop candidates:\n{context}<|eot_id|>"
-    )
-
-    for turn in (history or []):
-        role = turn.get("role", "user")
-        turns += f"<|start_header_id|>{role}<|end_header_id|>\n{turn['content']}<|eot_id|>"
-
-    turns += (
-        f"<|start_header_id|>user<|end_header_id|>\n{question}<|eot_id|>"
-        "<|start_header_id|>assistant<|end_header_id|>\n"
-    )
-    return turns
+        logger.warning("Ollama not reachable (%s); LLM inference disabled", exc)
+        return None

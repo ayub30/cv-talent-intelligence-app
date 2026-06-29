@@ -110,10 +110,10 @@ def _cv_text_for(name: str) -> str:
 
 
 def test_ingest_employee_appears_in_candidates(test_client, monkeypatch):
-    import app.main as main_module
+    import app.extractor as extractor_module
 
     monkeypatch.setattr(
-        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Sarah Connor")
+        extractor_module, "extract_text_from_pdf", lambda path: _cv_text_for("Sarah Connor")
     )
 
     response = test_client.post("/ingest", files=[_pdf_file("sarah_connor.pdf")])
@@ -128,10 +128,10 @@ def test_ingest_employee_appears_in_candidates(test_client, monkeypatch):
 
 
 def test_ingest_reupload_updates_not_duplicates(test_client, monkeypatch):
-    import app.main as main_module
+    import app.extractor as extractor_module
 
     monkeypatch.setattr(
-        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Alice Example")
+        extractor_module, "extract_text_from_pdf", lambda path: _cv_text_for("Alice Example")
     )
 
     test_client.post("/ingest", files=[_pdf_file("alice.pdf")])
@@ -143,15 +143,15 @@ def test_ingest_reupload_updates_not_duplicates(test_client, monkeypatch):
 
 
 def test_ingest_reupload_refreshes_skills(test_client, monkeypatch):
-    import app.main as main_module
+    import app.extractor as extractor_module
 
     monkeypatch.setattr(
-        main_module, "extract_text_from_pdf", lambda path: _cv_text_for("Bob Update")
+        extractor_module, "extract_text_from_pdf", lambda path: _cv_text_for("Bob Update")
     )
     test_client.post("/ingest", files=[_pdf_file("bob.pdf")])
 
     new_cv = "Bob Update\nPrincipal Engineer\nKubernetes 6 years. Docker 5 years."
-    monkeypatch.setattr(main_module, "extract_text_from_pdf", lambda path: new_cv)
+    monkeypatch.setattr(extractor_module, "extract_text_from_pdf", lambda path: new_cv)
     test_client.post("/ingest", files=[_pdf_file("bob.pdf")])
 
     candidates = test_client.get("/candidates").json()["items"]

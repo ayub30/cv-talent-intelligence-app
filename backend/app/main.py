@@ -16,9 +16,10 @@ from pydantic import BaseModel, Field
 from .auth import create_access_token, require_auth, verify_password
 from .chroma_store import init_collection, make_chroma_client, seed_collection
 from .database import init_db, make_connection, seed_db, seed_users
-from .extractor import extract_text_from_pdf, generate_employee_id, parse_cv_fields
+from . import extractor
 from .llm import LLMBackend, load_llm
 from .matcher import rank_candidates
+from .pipeline import ingest_cv
 from .tools import get_profile_cv, query_candidates, search_cvs
 
 
@@ -744,79 +745,20 @@ async def ingest(
     finally:
         await file.close()
 
-    cv_text = extract_text_from_pdf(dest_path)
-    fields = parse_cv_fields(cv_text, file.filename)
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    existing = db.execute(
-        "SELECT id, chroma_doc_id FROM employees WHERE LOWER(name) = LOWER(?)",
-        (fields["name"],),
-    ).fetchone()
-
-    if existing:
-        employee_id = existing["id"]
-        chroma_doc_id = existing["chroma_doc_id"]
-        db.execute(
-            """UPDATE employees
-               SET reply_company=?, location=?, seniority=?, availability_status=?,
-                   current_project_name=?, last_updated=?
-               WHERE id=?""",
-            (
-                fields["reply_company"],
-                fields["location"],
-                fields["seniority"],
-                fields["availability_status"],
-                fields["current_project_name"],
-                now,
-                employee_id,
-            ),
-        )
-        db.execute("DELETE FROM employee_skills WHERE employee_id=?", (employee_id,))
-    else:
-        employee_id = generate_employee_id()
-        chroma_doc_id = employee_id
-        db.execute(
-            """INSERT INTO employees
-               (id, name, reply_company, location, seniority, availability_status,
-                current_project_name, last_updated, chroma_doc_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                employee_id,
-                fields["name"],
-                fields["reply_company"],
-                fields["location"],
-                fields["seniority"],
-                fields["availability_status"],
-                fields["current_project_name"],
-                now,
-                chroma_doc_id,
-            ),
-        )
-
-    db.executemany(
-        "INSERT INTO employee_skills (employee_id, skill, years_experience) VALUES (?, ?, ?)",
-        [(employee_id, s["skill"], s["years_experience"]) for s in fields["skills"]],
-    )
-    db.commit()
-
-    collection.upsert(
-        ids=[chroma_doc_id],
-        documents=[cv_text or fields["name"]],
-        metadatas=[{"name": fields["name"], "reply_company": fields["reply_company"]}],
-    )
+    cv_text = extractor.extract_text_from_pdf(dest_path)
+    result = ingest_cv(cv_text, file.filename, db, collection)
 
     return IngestResponse(
         success=True,
         filename=file.filename,
         extracted={
-            "name": fields["name"],
-            "reply_company": fields["reply_company"],
-            "location": fields["location"],
-            "seniority": fields["seniority"],
-            "availability_status": fields["availability_status"],
-            "current_project_name": fields["current_project_name"],
-            "skills": fields["skills"],
+            "name": result.fields["name"],
+            "reply_company": result.fields["reply_company"],
+            "location": result.fields["location"],
+            "seniority": result.fields["seniority"],
+            "availability_status": result.fields["availability_status"],
+            "current_project_name": result.fields["current_project_name"],
+            "skills": result.fields["skills"],
         },
     )
 
